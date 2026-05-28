@@ -44,7 +44,7 @@ import dspy  # noqa: E402
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="NeuKRAG",
+    page_title="NeuMAD",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -169,11 +169,11 @@ def _render_agent_column(col, entry: dict, *, show_agreement: bool):
             f"{label}{badge}</span>",
             unsafe_allow_html=True,
         )
-        st.write(entry["statement"])
+        st.markdown(entry["statement"])
 
         refs = entry.get("references", "").strip()
         if refs:
-            with st.expander("References *(LLM-generated from KG evidence)*", expanded=False):
+            with st.expander("References", expanded=False):
                 for line in refs.splitlines():
                     line = line.strip()
                     if line:
@@ -188,11 +188,11 @@ def _render_synthesis_column(col, name: str, data: dict):
             f"{label}</span>",
             unsafe_allow_html=True,
         )
-        st.write(data["statement"])
+        st.markdown(data["statement"])
 
         refs = data.get("references", "").strip()
         if refs:
-            with st.expander("References *(LLM-generated from KG evidence)*", expanded=False):
+            with st.expander("References", expanded=False):
                 for line in refs.splitlines():
                     line = line.strip()
                     if line:
@@ -207,7 +207,7 @@ def render_synthesis_result(result: dict):
 
     st.divider()
     st.subheader("🔬 Mediator Synthesis")
-    st.write(result["final_hypothesis"])
+    st.markdown(result["final_hypothesis"])
 
 
 def render_adversarial_result(result: dict):
@@ -238,7 +238,7 @@ def render_adversarial_result(result: dict):
     )
     st.subheader(f"🔬 Mediator Final Synthesis")
     st.caption(rounds_info)
-    st.write(result["final_hypothesis"])
+    st.markdown(result["final_hypothesis"])
 
 # ---------------------------------------------------------------------------
 # Run

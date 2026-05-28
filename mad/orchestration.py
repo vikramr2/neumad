@@ -124,7 +124,11 @@ class MediatorSynthesis(dspy.Signature):
     neuroscience_hypothesis: str = dspy.InputField(desc="Neuroscience agent hypothesis (bio-realism)")
     aiml_hypothesis: str         = dspy.InputField(desc="AI/ML agent hypothesis (performance/accuracy)")
     neuromorphic_hypothesis: str = dspy.InputField(desc="Neuromorphic agent hypothesis (energy/memristors)")
-    synthesis: str               = dspy.OutputField(desc="Unified hypothesis integrating all three perspectives")
+    synthesis: str               = dspy.OutputField(
+        desc="Unified hypothesis in markdown: open with a brief summary, then use ## headers "
+             "for each integrated perspective and a ## Conclusion section; bullet points for "
+             "key claims, inline LaTeX ($...$) for equations, ``` for circuit or algorithm descriptions"
+    )
 
 
 class MediatorJudgeDiscriminative(dspy.Signature):
@@ -147,7 +151,10 @@ class MediatorJudgeExtractive(dspy.Signature):
 
     query: str          = dspy.InputField(desc="Original research query")
     debate_history: str = dspy.InputField(desc="Complete debate history")
-    final_answer: str   = dspy.OutputField(desc="Final synthesized hypothesis grounded in the debate evidence")
+    final_answer: str   = dspy.OutputField(
+        desc="Final synthesized hypothesis in markdown: ## headers per section, bullet points "
+             "for key claims, inline LaTeX ($...$) for equations, ``` for circuit or algorithm descriptions"
+    )
 
 
 # ---------------------------------------------------------------------------
