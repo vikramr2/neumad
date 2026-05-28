@@ -157,6 +157,18 @@ class MediatorJudgeExtractive(dspy.Signature):
     )
 
 
+class FollowUpAnswer(dspy.Signature):
+    """You are a neuromorphic computing expert answering a follow-up question about a
+    previously generated hypothesis. Use the synthesis as your primary knowledge base.
+    Be concise and directly address the question."""
+
+    previous_synthesis: str = dspy.InputField(desc="Previously generated neuromorphic hypothesis")
+    followup_question: str  = dspy.InputField(desc="The follow-up question")
+    answer: str             = dspy.OutputField(
+        desc="Markdown-formatted answer using ## headers, bullet points, and LaTeX ($...$) where relevant"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Modules
 # ---------------------------------------------------------------------------
@@ -224,6 +236,7 @@ class Mediator(dspy.Module):
         self.synthesis_predict      = dspy.Predict(MediatorSynthesis)
         self.discriminative_predict = dspy.Predict(MediatorJudgeDiscriminative)
         self.extractive_predict     = dspy.Predict(MediatorJudgeExtractive)
+        self.followup_predict       = dspy.Predict(FollowUpAnswer)
 
     def synthesize(self, query: str, hypotheses: dict[str, str]) -> str:
         result = self.synthesis_predict(
@@ -242,6 +255,10 @@ class Mediator(dspy.Module):
     def extract_answer(self, query: str, debate_history: str) -> str:
         result = self.extractive_predict(query=query, debate_history=debate_history)
         return result.final_answer.strip()
+
+    def answer_followup(self, synthesis: str, question: str) -> str:
+        result = self.followup_predict(previous_synthesis=synthesis, followup_question=question)
+        return result.answer.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +386,22 @@ def run_adversarial(
         "rounds_completed": rounds_completed,
         "debate_history":   history,
         "final_hypothesis": final_answer,
+    }
+
+
+def run_followup(
+    question: str,
+    previous_synthesis: str,
+    mediator: Mediator,
+    status_cb=None,
+) -> dict:
+    if status_cb:
+        status_cb("Mediator answering follow-up…")
+    answer = mediator.answer_followup(previous_synthesis, question)
+    return {
+        "query":            question,
+        "mode":             "followup",
+        "final_hypothesis": answer,
     }
 
 
