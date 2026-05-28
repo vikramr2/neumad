@@ -2,13 +2,14 @@
 # NeuKRAG Multi-Agent Debate — entry point
 #
 # Usage:
-#   ./run.sh "<query>"
-#   ./run.sh                          # runs default paper queries
+#   ./run.sh                          # Streamlit UI (default)
+#   ./run.sh --ui                     # Streamlit UI (explicit)
+#   ./run.sh "<query>"                # CLI, default paper queries
 #   ./run.sh "<query>" --out out.json
 #   NEUKRAG_MODE=adversarial ./run.sh "<query>"
 #
 # Runtime defaults live in mad/environment.json.
-# Any variable exported in the shell overrides the JSON defaults.
+# Any shell-exported variable overrides the JSON defaults.
 #
 # NEUKRAG_MODE          synthesis | adversarial
 # NEUKRAG_DEBATE_ROUNDS max debate rounds (adversarial)
@@ -18,4 +19,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 source ~/vikram_venv/bin/activate
-python "$SCRIPT_DIR/mad/orchestration.py" "$@"
+
+if [[ $# -eq 0 || "${1:-}" == "--ui" ]]; then
+    streamlit run "$SCRIPT_DIR/ui/app.py"
+else
+    python "$SCRIPT_DIR/mad/orchestration.py" "$@"
+fi

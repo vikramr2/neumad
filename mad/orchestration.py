@@ -103,6 +103,19 @@ class DebateResponse(dspy.Signature):
     debate_level: str   = dspy.InputField(desc="Instruction governing how strongly you must disagree")
     debate_history: str = dspy.InputField(desc="Full debate history so far (all agents, all rounds)")
     response: str       = dspy.OutputField(desc="Your rebuttal or refinement from your specialist lens, 1-2 paragraphs")
+    agreed: str         = dspy.OutputField(desc='Answer "yes" if you broadly agree with the other agents\' positions, "no" if you disagree')
+
+
+class ExtractReferences(dspy.Signature):
+    """Given a neuromorphic computing hypothesis and the knowledge graph triples it was
+    grounded in, generate 3-5 APA-formatted citations for the key papers underlying the
+    main claims. The KG entities were extracted from neuromorphic computing literature;
+    use your knowledge of this field to identify the most relevant source papers.
+    Output only the citations, one per line, no bullet points or numbering."""
+
+    hypothesis: str    = dspy.InputField(desc="Scientific hypothesis text")
+    graph_context: str = dspy.InputField(desc="KG triples (head → relation → tail) used to ground the hypothesis")
+    references: str    = dspy.OutputField(desc="3-5 APA-formatted citations, one per line")
 
 
 # ---------------------------------------------------------------------------
@@ -154,16 +167,18 @@ class MediatorJudgeExtractive(dspy.Signature):
 class SpecialistAgent(dspy.Module):
     def __init__(self, name: str, kg_path: Path, k_hops: int = 2, max_triples: int = 40):
         super().__init__()
-        self.name       = name
-        self.role       = _AGENT_ROLES[name]
-        self.k_hops     = k_hops
+        self.name        = name
+        self.role        = _AGENT_ROLES[name]
+        self.k_hops      = k_hops
         self.max_triples = max_triples
-        self.graph          = load_graph(kg_path)
+        self.graph            = load_graph(kg_path)
         self.entity_extractor = EntityExtractor()
-        self.hyp_predict    = dspy.Predict(_HYPOTHESIS_SIGS[name])
-        self.debate_predict = dspy.Predict(DebateResponse)
+        self.hyp_predict      = dspy.Predict(_HYPOTHESIS_SIGS[name])
+        self.debate_predict   = dspy.Predict(DebateResponse)
+        self.ref_predict      = dspy.Predict(ExtractReferences)
 
-    def initial_hypothesis(self, query: str) -> tuple[str, int]:
+    def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
+        """Returns (hypothesis_text, triples)."""
         entities    = self.entity_extractor(query=query)
         entry_nodes = keyword_entry_points(self.graph, entities)
         if not entry_nodes:
@@ -172,16 +187,24 @@ class SpecialistAgent(dspy.Module):
         triples = bfs_subgraph(self.graph, entry_nodes, k_hops=self.k_hops, max_triples=self.max_triples)
         context = format_context(triples)
         result  = self.hyp_predict(query=query, graph_context=context)
-        return result.hypothesis.strip(), len(triples)
+        return result.hypothesis.strip(), triples
 
-    def debate_response(self, query: str, debate_history: str, debate_level: str) -> str:
+    def get_references(self, hypothesis: str, triples: list[dict]) -> str:
+        """Generate APA citations from KG evidence underlying a hypothesis."""
+        context = format_context(triples) if triples else "(no KG triples available)"
+        result  = self.ref_predict(hypothesis=hypothesis, graph_context=context)
+        return result.references.strip()
+
+    def debate_response(self, query: str, debate_history: str, debate_level: str) -> tuple[str, bool]:
+        """Returns (response_text, agreed)."""
         result = self.debate_predict(
             query=query,
             agent_role=self.role,
             debate_level=debate_level,
             debate_history=debate_history,
         )
-        return result.response.strip()
+        agreed = result.agreed.strip().lower().startswith("yes")
+        return result.response.strip(), agreed
 
 
 class Mediator(dspy.Module):
@@ -227,25 +250,38 @@ def run_synthesis(
     query: str,
     agents: list[SpecialistAgent],
     mediator: Mediator,
+    status_cb=None,
 ) -> dict:
-    log.info(f"Query (synthesis): {query}")
-    hypotheses:   dict[str, str] = {}
-    triples_used: dict[str, int] = {}
+    def _status(msg: str):
+        log.info(msg)
+        if status_cb:
+            status_cb(msg)
+
+    _status(f"Query (synthesis): {query}")
+    agent_hypotheses: dict[str, dict] = {}
 
     for agent in agents:
-        hyp, n = agent.initial_hypothesis(query)
-        hypotheses[agent.name]   = hyp
-        triples_used[agent.name] = n
-        log.info(f"  [{agent.name}] {n} triples used")
+        _status(f"  [{agent.name}] generating hypothesis…")
+        hyp, triples = agent.initial_hypothesis(query)
+        _status(f"  [{agent.name}] extracting references…")
+        refs = agent.get_references(hyp, triples)
+        agent_hypotheses[agent.name] = {
+            "statement":  hyp,
+            "triples":    triples,
+            "references": refs,
+        }
+        _status(f"  [{agent.name}] done ({len(triples)} triples used)")
 
-    log.info("  Mediator synthesizing...")
-    synthesis = mediator.synthesize(query, hypotheses)
+    _status("  Mediator synthesizing…")
+    synthesis = mediator.synthesize(
+        query,
+        {name: d["statement"] for name, d in agent_hypotheses.items()},
+    )
 
     return {
         "query":            query,
         "mode":             "synthesis",
-        "agent_hypotheses": hypotheses,
-        "triples_used":     triples_used,
+        "agent_hypotheses": agent_hypotheses,
         "final_hypothesis": synthesis,
     }
 
@@ -256,37 +292,63 @@ def run_adversarial(
     mediator: Mediator,
     max_rounds: int,
     debate_level: int,
+    status_cb=None,
 ) -> dict:
-    log.info(f"Query (adversarial, level={debate_level}, max_rounds={max_rounds}): {query}")
-    level_prompt   = DEBATE_LEVEL_PROMPTS[debate_level]
+    def _status(msg: str):
+        log.info(msg)
+        if status_cb:
+            status_cb(msg)
+
+    _status(f"Query (adversarial, level={debate_level}, max_rounds={max_rounds}): {query}")
+    level_prompt = DEBATE_LEVEL_PROMPTS[debate_level]
     history: list[dict] = []
 
-    # Round 0 — initial KG-grounded positions
+    # Round 0 — initial KG-grounded positions + per-agent references
+    agent_refs: dict[str, str] = {}
     for agent in agents:
-        hyp, n = agent.initial_hypothesis(query)
-        history.append({"agent": agent.name, "round": 0, "statement": hyp})
-        log.info(f"  [{agent.name}] round 0 complete ({n} triples used)")
+        _status(f"  [{agent.name}] round 0 — generating hypothesis…")
+        hyp, triples = agent.initial_hypothesis(query)
+        _status(f"  [{agent.name}] round 0 — extracting references…")
+        refs = agent.get_references(hyp, triples)
+        agent_refs[agent.name] = refs
+        history.append({
+            "agent":      agent.name,
+            "round":      0,
+            "statement":  hyp,
+            "triples":    triples,
+            "references": refs,
+            "agreed":     None,   # no prior positions to agree/disagree with
+        })
+        _status(f"  [{agent.name}] round 0 complete ({len(triples)} triples used)")
 
     rounds_completed = 0
     for round_num in range(1, max_rounds + 1):
-        log.info(f"  Debate round {round_num}/{max_rounds}")
+        _status(f"  Debate round {round_num}/{max_rounds}")
         history_str = format_debate_history(history)
 
         for agent in agents:
-            response = agent.debate_response(query, history_str, level_prompt)
-            history.append({"agent": agent.name, "round": round_num, "statement": response})
+            _status(f"  [{agent.name}] round {round_num} — responding…")
+            response, agreed = agent.debate_response(query, history_str, level_prompt)
+            history.append({
+                "agent":      agent.name,
+                "round":      round_num,
+                "statement":  response,
+                "triples":    [],
+                "references": agent_refs[agent.name],  # carry round-0 KG refs forward
+                "agreed":     agreed,
+            })
 
         rounds_completed = round_num
         history_str = format_debate_history(history)
 
         # Discriminative mode — adaptive break (MAD §2)
         concluded, reason = mediator.can_conclude(query, history_str)
-        log.info(f"  Judge: concluded={concluded} — {reason}")
+        _status(f"  Judge: concluded={concluded} — {reason}")
         if concluded:
-            log.info("  Adaptive break: debate concluded early")
+            _status("  Adaptive break: debate concluded early")
             break
 
-    log.info("  Mediator extracting final answer...")
+    _status("  Mediator extracting final answer…")
     final_answer = mediator.extract_answer(query, format_debate_history(history))
 
     return {
@@ -379,6 +441,7 @@ def main():
             result = run_synthesis(query, agents, mediator)
         else:
             result = run_adversarial(query, agents, mediator, max_rounds, debate_level)
+
 
         results.append(result)
         print(f"\n{'='*70}")
