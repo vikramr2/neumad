@@ -304,30 +304,9 @@ def run_adversarial(
 # ---------------------------------------------------------------------------
 
 def load_toml(config_path: Path) -> dict:
-    try:
-        import tomllib
-        with open(config_path, "rb") as f:
-            return tomllib.load(f)
-    except ImportError:
-        pass
-    try:
-        import tomli
-        with open(config_path, "rb") as f:
-            return tomli.load(f)
-    except ImportError:
-        pass
-    cfg: dict = {}
-    section = None
-    with open(config_path) as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("[") and line.endswith("]"):
-                section = line[1:-1]
-                cfg[section] = {}
-            elif "=" in line and section is not None:
-                k, v = line.split("=", 1)
-                cfg[section][k.strip()] = v.strip().strip('"').strip("'")
-    return cfg
+    import tomllib
+    with open(config_path, "rb") as f:
+        return tomllib.load(f)
 
 
 def load_env(env_path: Path) -> dict:
