@@ -106,16 +106,6 @@ class DebateResponse(dspy.Signature):
     agreed: str         = dspy.OutputField(desc='Answer "yes" if you broadly agree with the other agents\' positions, "no" if you disagree')
 
 
-class ExtractReferences(dspy.Signature):
-    """Given a neuromorphic computing hypothesis and the knowledge graph triples it was
-    grounded in, generate 3-5 APA-formatted citations for the key papers underlying the
-    main claims. The KG entities were extracted from neuromorphic computing literature;
-    use your knowledge of this field to identify the most relevant source papers.
-    Output only the citations, one per line, no bullet points or numbering."""
-
-    hypothesis: str    = dspy.InputField(desc="Scientific hypothesis text")
-    graph_context: str = dspy.InputField(desc="KG triples (head → relation → tail) used to ground the hypothesis")
-    references: str    = dspy.OutputField(desc="3-5 APA-formatted citations, one per line")
 
 
 # ---------------------------------------------------------------------------
@@ -165,17 +155,24 @@ class MediatorJudgeExtractive(dspy.Signature):
 # ---------------------------------------------------------------------------
 
 class SpecialistAgent(dspy.Module):
-    def __init__(self, name: str, kg_path: Path, k_hops: int = 2, max_triples: int = 40):
+    def __init__(
+        self,
+        name: str,
+        kg_path: Path,
+        k_hops: int = 2,
+        max_triples: int = 40,
+        metadata: dict[int, dict] | None = None,
+    ):
         super().__init__()
         self.name        = name
         self.role        = _AGENT_ROLES[name]
         self.k_hops      = k_hops
         self.max_triples = max_triples
+        self.metadata         = metadata or {}
         self.graph            = load_graph(kg_path)
         self.entity_extractor = EntityExtractor()
         self.hyp_predict      = dspy.Predict(_HYPOTHESIS_SIGS[name])
         self.debate_predict   = dspy.Predict(DebateResponse)
-        self.ref_predict      = dspy.Predict(ExtractReferences)
 
     def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
         """Returns (hypothesis_text, triples)."""
@@ -189,11 +186,18 @@ class SpecialistAgent(dspy.Module):
         result  = self.hyp_predict(query=query, graph_context=context)
         return result.hypothesis.strip(), triples
 
-    def get_references(self, hypothesis: str, triples: list[dict]) -> str:
-        """Generate APA citations from KG evidence underlying a hypothesis."""
-        context = format_context(triples) if triples else "(no KG triples available)"
-        result  = self.ref_predict(hypothesis=hypothesis, graph_context=context)
-        return result.references.strip()
+    def get_references(self, triples: list[dict]) -> str:
+        """Return APA citations for the top-5 most-cited source papers in the triple set."""
+        from collections import Counter
+        counts = Counter(
+            t["document_id"] for t in triples if t.get("document_id") is not None
+        )
+        refs = []
+        for doc_id, _ in counts.most_common(5):
+            paper = self.metadata.get(doc_id)
+            if paper:
+                refs.append(format_apa(paper))
+        return "\n".join(refs)
 
     def debate_response(self, query: str, debate_history: str, debate_level: str) -> tuple[str, bool]:
         """Returns (response_text, agreed)."""
@@ -264,7 +268,7 @@ def run_synthesis(
         _status(f"  [{agent.name}] generating hypothesis…")
         hyp, triples = agent.initial_hypothesis(query)
         _status(f"  [{agent.name}] extracting references…")
-        refs = agent.get_references(hyp, triples)
+        refs = agent.get_references(triples)
         agent_hypotheses[agent.name] = {
             "statement":  hyp,
             "triples":    triples,
@@ -309,7 +313,7 @@ def run_adversarial(
         _status(f"  [{agent.name}] round 0 — generating hypothesis…")
         hyp, triples = agent.initial_hypothesis(query)
         _status(f"  [{agent.name}] round 0 — extracting references…")
-        refs = agent.get_references(hyp, triples)
+        refs = agent.get_references(triples)
         agent_refs[agent.name] = refs
         history.append({
             "agent":      agent.name,
@@ -365,6 +369,68 @@ def run_adversarial(
 # Config / env helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Metadata helpers — real APA citations from CSV paper records
+# ---------------------------------------------------------------------------
+
+def _format_author(name: str) -> str:
+    """Convert 'First [Middle] Last' → 'Last, F. [M.]'"""
+    parts = name.strip().rstrip(";").split()
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    last     = parts[-1]
+    initials = " ".join(p[0] + "." for p in parts[:-1] if p)
+    return f"{last}, {initials}"
+
+
+def format_apa(paper: dict) -> str:
+    """Format a paper metadata dict as an APA 7th-edition citation."""
+    raw = str(paper.get("authors") or "")
+    authors = [a.strip() for a in raw.split(";") if a.strip()]
+    if len(authors) > 6:
+        author_str = ", ".join(_format_author(a) for a in authors[:6]) + ", et al."
+    elif len(authors) > 1:
+        author_str = (
+            ", ".join(_format_author(a) for a in authors[:-1])
+            + f", & {_format_author(authors[-1])}"
+        )
+    elif authors:
+        author_str = _format_author(authors[0])
+    else:
+        author_str = "Unknown"
+
+    # year — "date" column is YYYY-MM-DD; "year" column is float
+    year = ""
+    if paper.get("date"):
+        year = str(paper["date"])[:4]
+    elif paper.get("year"):
+        try:
+            year = str(int(float(paper["year"])))
+        except (ValueError, TypeError):
+            year = str(paper["year"])
+
+    title = paper.get("title", "Untitled")
+    doi   = paper.get("doi", "")
+    doi_str = f" https://doi.org/{doi}" if doi else ""
+    return f"{author_str} ({year}). {title}.{doi_str}"
+
+
+def load_metadata(csv_path: Path) -> dict[int, dict]:
+    """Load a paper-metadata CSV into a dict keyed by integer document id."""
+    import csv as _csv
+    metadata: dict[int, dict] = {}
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        for row in _csv.DictReader(f):
+            try:
+                doc_id = int(float(row["id"]))
+                metadata[doc_id] = dict(row)
+            except (KeyError, ValueError):
+                continue
+    return metadata
+
+
 def load_toml(config_path: Path) -> dict:
     import tomllib
     with open(config_path, "rb") as f:
@@ -408,8 +474,10 @@ def main():
     if debate_level not in DEBATE_LEVEL_PROMPTS:
         sys.exit(f"ERROR: NEUKRAG_DEBATE_LEVEL must be 0-3, got {debate_level}")
 
-    cfg    = load_toml(CONFIG_PATH)
-    kg_cfg = cfg.get("kg_paths", {})
+    cfg      = load_toml(CONFIG_PATH)
+    kg_cfg   = cfg.get("kg_paths", {})
+    meta_cfg = cfg.get("metadata_paths", {})
+
     kg_paths = {
         "neuroscience": Path(kg_cfg.get("neuroscience_kg", "")).expanduser(),
         "aiml":         Path(kg_cfg.get("aiml_kg", "")).expanduser(),
@@ -419,6 +487,12 @@ def main():
         if not path.exists():
             sys.exit(f"ERROR: KG path for '{name}' not found: {path}")
 
+    metadata = {
+        name: load_metadata(Path(meta_cfg[f"{name}_metadata"]).expanduser())
+        for name in ("neuroscience", "aiml", "neuromorphic")
+        if meta_cfg.get(f"{name}_metadata")
+    }
+
     lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
     dspy.configure(lm=lm)
     log.info(f"DSPy configured with {LLM_MODEL} @ {OLLAMA_BASE_URL}")
@@ -427,9 +501,12 @@ def main():
     ))
 
     agents = [
-        SpecialistAgent("neuroscience", kg_paths["neuroscience"], args.k_hops, args.max_triples),
-        SpecialistAgent("aiml",         kg_paths["aiml"],         args.k_hops, args.max_triples),
-        SpecialistAgent("neuromorphic", kg_paths["neuromorphic"], args.k_hops, args.max_triples),
+        SpecialistAgent("neuroscience", kg_paths["neuroscience"], args.k_hops, args.max_triples,
+                        metadata=metadata.get("neuroscience")),
+        SpecialistAgent("aiml",         kg_paths["aiml"],         args.k_hops, args.max_triples,
+                        metadata=metadata.get("aiml")),
+        SpecialistAgent("neuromorphic", kg_paths["neuromorphic"], args.k_hops, args.max_triples,
+                        metadata=metadata.get("neuromorphic")),
     ]
     mediator = Mediator()
 

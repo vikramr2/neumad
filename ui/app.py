@@ -31,6 +31,7 @@ from orchestration import (   # noqa: E402
     SpecialistAgent,
     _AGENT_LABELS,
     load_env,
+    load_metadata,
     load_toml,
     run_adversarial,
     run_synthesis,
@@ -95,24 +96,34 @@ def build_system(k_hops: int, max_triples: int):
     lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
     dspy.configure(lm=lm)
 
-    cfg    = load_toml(CONFIG_PATH)
-    kg_cfg = cfg.get("kg_paths", {})
+    cfg      = load_toml(CONFIG_PATH)
+    kg_cfg   = cfg.get("kg_paths", {})
+    meta_cfg = cfg.get("metadata_paths", {})
+
+    metadata = {
+        name: load_metadata(Path(meta_cfg[f"{name}_metadata"]).expanduser())
+        for name in ("neuroscience", "aiml", "neuromorphic")
+        if meta_cfg.get(f"{name}_metadata")
+    }
 
     agents = [
         SpecialistAgent(
             "neuroscience",
             Path(kg_cfg["neuroscience_kg"]).expanduser(),
             k_hops, max_triples,
+            metadata=metadata.get("neuroscience"),
         ),
         SpecialistAgent(
             "aiml",
             Path(kg_cfg["aiml_kg"]).expanduser(),
             k_hops, max_triples,
+            metadata=metadata.get("aiml"),
         ),
         SpecialistAgent(
             "neuromorphic",
             Path(kg_cfg["neuromorphic_kg"]).expanduser(),
             k_hops, max_triples,
+            metadata=metadata.get("neuromorphic"),
         ),
     ]
     mediator = Mediator()

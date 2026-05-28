@@ -145,7 +145,7 @@ def load_graph(output_dir: Path) -> nx.DiGraph:
                 t = json.loads(line)
                 h, r, tail = t.get("h", ""), t.get("r", ""), t.get("t", "")
                 if h and r and tail:
-                    g.add_edge(h, tail, relation=r)
+                    g.add_edge(h, tail, relation=r, document_id=t.get("document_id"))
         log.info(f"Loaded JSONL graph: {len(g.nodes)} nodes, {len(g.edges)} edges ({path})")
         return g
     sys.exit(f"ERROR: No KG found in {output_dir}/merged/. Run extract_kg.py + cli pipeline first.")
@@ -185,7 +185,8 @@ def bfs_subgraph(graph: nx.DiGraph, entry_nodes: set[str], k_hops: int, max_trip
             continue
         for neighbor in graph.successors(node):
             edge = graph.get_edge_data(node, neighbor) or {}
-            triples.append({"h": node, "r": edge.get("relation", "relates_to"), "t": neighbor})
+            triples.append({"h": node, "r": edge.get("relation", "relates_to"), "t": neighbor,
+                            "document_id": edge.get("document_id")})
             if neighbor not in visited:
                 visited.add(neighbor)
                 queue.append((neighbor, depth + 1))
