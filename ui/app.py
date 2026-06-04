@@ -25,6 +25,8 @@ sys.path.insert(0, str(_ROOT / "neukrag"))
 
 from orchestration import (   # noqa: E402
     CONFIG_PATH,
+    CHOREOGRAPHED_COVARIANCE,
+    CHOREOGRAPHED_ROUND_LABELS,
     DEBATE_LEVEL_PROMPTS,
     LLM_MODEL,
     OLLAMA_API_KEY,
@@ -35,6 +37,7 @@ from orchestration import (   # noqa: E402
     load_metadata,
     load_toml,
     run_adversarial,
+    run_choreographed,
     run_followup,
     run_synthesis,
 )
@@ -95,12 +98,20 @@ with st.sidebar:
     # --- Settings ---
     st.subheader("Settings")
 
+    _MODE_LABELS = {
+        "synthesis":     "🤝 Synthesis",
+        "adversarial":   "⚔️ Adversarial",
+        "choreographed": "🎼 Choreographed",
+    }
     mode = st.radio(
         "Mode",
-        options=["synthesis", "adversarial"],
-        format_func=lambda x: "🤝 Synthesis" if x == "synthesis" else "⚔️ Adversarial",
-        help="Synthesis: agents generate independently, mediator integrates.\n"
-             "Adversarial: MAD-style debate with rebuttals and adaptive break.",
+        options=["synthesis", "adversarial", "choreographed"],
+        format_func=_MODE_LABELS.get,
+        help=(
+            "Synthesis: agents generate independently, mediator integrates.\n"
+            "Adversarial: MAD-style debate with rebuttals and adaptive break.\n"
+            "Choreographed: fixed 5-round arc — establish → attack → converge → synthesize → review."
+        ),
     )
 
     if mode == "adversarial":
@@ -237,6 +248,30 @@ def render_result_in_chat(result: dict):
                 if round_num < max(rounds):
                     st.divider()
 
+    elif mode == "choreographed":
+        c_rounds: dict[int, list[dict]] = {}
+        for entry in result["debate_history"]:
+            c_rounds.setdefault(entry["round"], []).append(entry)
+
+        with st.expander("Choreographed debate — 5 rounds", expanded=False):
+            for round_num, entries in sorted(c_rounds.items()):
+                round_label = CHOREOGRAPHED_ROUND_LABELS.get(round_num, f"Round {round_num}")
+                covariance  = CHOREOGRAPHED_COVARIANCE.get(round_num, "")
+                cov_badge   = f" *(covariance: {covariance})*" if covariance != "none" else ""
+
+                if round_num == 4:
+                    st.markdown(f"**Round 4 — {round_label}**")
+                    st.markdown(entries[0]["statement"])
+                else:
+                    show_agree = round_num > 1
+                    agreed_count = sum(1 for e in entries if e.get("agreed") is True)
+                    agree_str = f" · {agreed_count}/{len(entries)} agree" if show_agree else ""
+                    st.markdown(f"**Round {round_num} — {round_label}**{cov_badge}{agree_str}")
+                    _render_agent_columns(entries, show_agreement=show_agree)
+
+                if round_num < max(c_rounds):
+                    st.divider()
+
 
 def render_messages(messages: list[dict], *, read_only: bool = False):
     """Render a list of chat messages."""
@@ -312,17 +347,23 @@ if prompt := st.chat_input(placeholder):
                 "result":  None,
             })
         else:
-            spinner_msg = "Running synthesis…" if mode == "synthesis" else "Running adversarial debate…"
+            spinner_msg = {
+                "synthesis":     "Running synthesis…",
+                "adversarial":   "Running adversarial debate…",
+                "choreographed": "Running choreographed debate…",
+            }.get(mode, "Running…")
             with st.spinner(spinner_msg):
                 if mode == "synthesis":
                     result = run_synthesis(prompt, agents, mediator, status_cb=on_status)
-                else:
+                elif mode == "adversarial":
                     result = run_adversarial(
                         prompt, agents, mediator,
                         max_rounds=debate_rounds,
                         debate_level=debate_level,
                         status_cb=on_status,
                     )
+                else:
+                    result = run_choreographed(prompt, agents, mediator, status_cb=on_status)
             status_box.empty()
             result_placeholder.empty()
             render_result_in_chat(result)

@@ -7,7 +7,7 @@ or a MAD-style adversarial debate, with a baseline LLM mediator.
 
 Runtime configuration is read from mad/environment.json (defaults) and may
 be overridden by shell environment variables of the same name:
-    NEUKRAG_MODE          synthesis | adversarial
+    NEUKRAG_MODE          synthesis | adversarial | choreographed
     NEUKRAG_DEBATE_ROUNDS max debate rounds (adversarial only)
     NEUKRAG_DEBATE_LEVEL  0-3 tit-for-tat intensity (adversarial only)
 
@@ -68,6 +68,35 @@ DEBATE_LEVEL_PROMPTS = {
     3: "All agents must disagree on every point. There should be no consensus whatsoever.",
 }
 
+# Choreographed mode — fixed 5-round structure with target covariance per round
+CHOREOGRAPHED_ROUND_LABELS = {
+    1: "Establishing Positions",
+    2: "Adversarial Challenge",
+    3: "Finding Convergence",
+    4: "Mediator Synthesis",
+    5: "Reviewing Synthesis",
+}
+
+CHOREOGRAPHED_COVARIANCE = {
+    1: "moderate",
+    2: "low",
+    3: "high",
+    4: "none",
+    5: "moderate-high",
+}
+
+# Per-round debate-level prompts for rounds 2 and 3 (round 1 has no prompt; 4 is mediator-only)
+_CHOREOGRAPHED_DEBATE_PROMPTS = {
+    2: DEBATE_LEVEL_PROMPTS[3],  # low covariance: all must disagree
+    3: (
+        "CONVERGENCE ROUND: Actively seek common ground. "
+        "For each point where you previously disagreed, examine whether the other agents' "
+        "evidence from their domain supports or modifies your position. "
+        "Explicitly identify every claim you can now endorse. "
+        "Minimize remaining disagreement — your goal is to find what all agents agree on."
+    ),
+}
+
 _HYPOTHESIS_SIGS = {
     "neuroscience": NeuroscienceHypothesis,
     "aiml":         AIMLHypothesis,
@@ -104,6 +133,20 @@ class DebateResponse(dspy.Signature):
     debate_history: str = dspy.InputField(desc="Full debate history so far (all agents, all rounds)")
     response: str       = dspy.OutputField(desc="Your rebuttal or refinement from your specialist lens, 1-2 paragraphs")
     agreed: str         = dspy.OutputField(desc='Answer "yes" if you broadly agree with the other agents\' positions, "no" if you disagree')
+
+
+class ChoreographedAgreementResponse(dspy.Signature):
+    """You are a domain specialist reviewing a mediator's synthesis of a multi-agent neuromorphic
+    computing debate. Evaluate the synthesis from your specialist perspective.
+    Acknowledge what the synthesis gets right from your domain's viewpoint and note any remaining
+    gaps or corrections. Lean toward endorsing where the science is sound."""
+
+    query: str          = dspy.InputField(desc="Original research query")
+    agent_role: str     = dspy.InputField(desc="Your specialist role and evaluation criteria")
+    synthesis: str      = dspy.InputField(desc="The mediator's synthesized hypothesis")
+    debate_history: str = dspy.InputField(desc="Full debate history prior to this synthesis")
+    response: str       = dspy.OutputField(desc="Your evaluation of the synthesis from your specialist lens, 1-2 paragraphs")
+    agreed: str         = dspy.OutputField(desc='Answer "yes" if you broadly agree with the synthesis, "no" if you have significant remaining concerns')
 
 
 
@@ -190,8 +233,9 @@ class SpecialistAgent(dspy.Module):
         self.metadata         = metadata or {}
         self.graph            = load_graph(kg_path)
         self.entity_extractor = EntityExtractor()
-        self.hyp_predict      = dspy.Predict(_HYPOTHESIS_SIGS[name])
-        self.debate_predict   = dspy.Predict(DebateResponse)
+        self.hyp_predict       = dspy.Predict(_HYPOTHESIS_SIGS[name])
+        self.debate_predict    = dspy.Predict(DebateResponse)
+        self.agreement_predict = dspy.Predict(ChoreographedAgreementResponse)
 
     def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
         """Returns (hypothesis_text, triples)."""
@@ -224,6 +268,17 @@ class SpecialistAgent(dspy.Module):
             query=query,
             agent_role=self.role,
             debate_level=debate_level,
+            debate_history=debate_history,
+        )
+        agreed = result.agreed.strip().lower().startswith("yes")
+        return result.response.strip(), agreed
+
+    def review_synthesis(self, query: str, synthesis: str, debate_history: str) -> tuple[str, bool]:
+        """Returns (response_text, agreed) — used in choreographed round 5."""
+        result = self.agreement_predict(
+            query=query,
+            agent_role=self.role,
+            synthesis=synthesis,
             debate_history=debate_history,
         )
         agreed = result.agreed.strip().lower().startswith("yes")
@@ -389,6 +444,121 @@ def run_adversarial(
     }
 
 
+def format_choreographed_history(history: list[dict]) -> str:
+    lines = []
+    for entry in history:
+        if entry["agent"] == "mediator":
+            label = "MEDIATOR"
+        else:
+            label = _AGENT_LABELS.get(entry["agent"], entry["agent"].upper())
+        round_label = CHOREOGRAPHED_ROUND_LABELS.get(entry["round"], f"Round {entry['round']}")
+        lines.append(f"[{label} — {round_label}]:\n{entry['statement']}\n")
+    return "\n".join(lines)
+
+
+def run_choreographed(
+    query: str,
+    agents: list[SpecialistAgent],
+    mediator: Mediator,
+    status_cb=None,
+) -> dict:
+    def _status(msg: str):
+        log.info(msg)
+        if status_cb:
+            status_cb(msg)
+
+    _status(f"Query (choreographed): {query}")
+    history: list[dict] = []
+    agent_refs: dict[str, str] = {}
+
+    # ── Round 1: Establish opinion (covariance: moderate) ──────────────────
+    _status("  Round 1 — establishing positions…")
+    for agent in agents:
+        _status(f"  [{agent.name}] round 1 — generating hypothesis…")
+        hyp, triples = agent.initial_hypothesis(query)
+        refs = agent.get_references(triples)
+        agent_refs[agent.name] = refs
+        history.append({
+            "agent":      agent.name,
+            "round":      1,
+            "statement":  hyp,
+            "triples":    triples,
+            "references": refs,
+            "agreed":     None,
+        })
+        _status(f"  [{agent.name}] round 1 complete ({len(triples)} triples used)")
+
+    # ── Round 2: Adversarial attack (covariance: low) ─────────────────────
+    _status("  Round 2 — adversarial challenge…")
+    for agent in agents:
+        _status(f"  [{agent.name}] round 2 — attacking…")
+        response, agreed = agent.debate_response(
+            query,
+            format_choreographed_history(history),
+            _CHOREOGRAPHED_DEBATE_PROMPTS[2],
+        )
+        history.append({
+            "agent":      agent.name,
+            "round":      2,
+            "statement":  response,
+            "triples":    [],
+            "references": agent_refs[agent.name],
+            "agreed":     agreed,
+        })
+
+    # ── Round 3: Convergence (covariance: high) ────────────────────────────
+    _status("  Round 3 — finding convergence…")
+    for agent in agents:
+        _status(f"  [{agent.name}] round 3 — converging…")
+        response, agreed = agent.debate_response(
+            query,
+            format_choreographed_history(history),
+            _CHOREOGRAPHED_DEBATE_PROMPTS[3],
+        )
+        history.append({
+            "agent":      agent.name,
+            "round":      3,
+            "statement":  response,
+            "triples":    [],
+            "references": agent_refs[agent.name],
+            "agreed":     agreed,
+        })
+
+    # ── Round 4: Mediator synthesis (covariance: none) ────────────────────
+    _status("  Round 4 — mediator synthesizing…")
+    synthesis = mediator.extract_answer(query, format_choreographed_history(history))
+    history.append({
+        "agent":      "mediator",
+        "round":      4,
+        "statement":  synthesis,
+        "triples":    [],
+        "references": "",
+        "agreed":     None,
+    })
+
+    # ── Round 5: Do you agree? (covariance: moderate-high) ────────────────
+    _status("  Round 5 — agents reviewing synthesis…")
+    history_str = format_choreographed_history(history)
+    for agent in agents:
+        _status(f"  [{agent.name}] round 5 — reviewing synthesis…")
+        response, agreed = agent.review_synthesis(query, synthesis, history_str)
+        history.append({
+            "agent":      agent.name,
+            "round":      5,
+            "statement":  response,
+            "triples":    [],
+            "references": agent_refs[agent.name],
+            "agreed":     agreed,
+        })
+
+    return {
+        "query":            query,
+        "mode":             "choreographed",
+        "debate_history":   history,
+        "final_hypothesis": synthesis,
+    }
+
+
 def run_followup(
     question: str,
     previous_synthesis: str,
@@ -506,8 +676,8 @@ def main():
     env = load_env(ENV_PATH)
 
     mode = env["NEUKRAG_MODE"].lower()
-    if mode not in ("synthesis", "adversarial"):
-        sys.exit(f"ERROR: NEUKRAG_MODE must be 'synthesis' or 'adversarial', got '{mode}'")
+    if mode not in ("synthesis", "adversarial", "choreographed"):
+        sys.exit(f"ERROR: NEUKRAG_MODE must be 'synthesis', 'adversarial', or 'choreographed', got '{mode}'")
 
     max_rounds   = int(env["NEUKRAG_DEBATE_ROUNDS"])
     debate_level = int(env["NEUKRAG_DEBATE_LEVEL"])
@@ -556,9 +726,10 @@ def main():
     for query in queries:
         if mode == "synthesis":
             result = run_synthesis(query, agents, mediator)
-        else:
+        elif mode == "adversarial":
             result = run_adversarial(query, agents, mediator, max_rounds, debate_level)
-
+        else:
+            result = run_choreographed(query, agents, mediator)
 
         results.append(result)
         print(f"\n{'='*70}")
