@@ -55,6 +55,20 @@ from agents.neuroscience import NeuroscienceHypothesis, ROLE as NEURO_ROLE, LABE
 from agents.aiml         import AIMLHypothesis,         ROLE as AIML_ROLE,  LABEL as AIML_LABEL
 from agents.neuromorphic import NeuromorphicHypothesis, ROLE as NEURO_M_ROLE, LABEL as NEURO_M_LABEL
 
+# ---------------------------------------------------------------------------
+# Chamber imports — run_* functions live in their own modules.
+# Placed here (after all classes/helpers are defined) so the chambers can
+# import back from this module without triggering a circular-import error.
+# ---------------------------------------------------------------------------
+
+from chambers.synthesis     import run_synthesis      # noqa: E402
+from chambers.adversarial   import run_adversarial    # noqa: E402
+from chambers.choreographed import (                  # noqa: E402
+    CHOREOGRAPHED_ROUND_LABELS,
+    CHOREOGRAPHED_COVARIANCE,
+    run_choreographed,
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger(__name__)
 
@@ -67,35 +81,6 @@ DEBATE_LEVEL_PROMPTS = {
     1: "Most points should show disagreement, but minor consensus on peripheral details is acceptable.",
     2: "It's not necessary to fully agree with each other's perspectives; the objective is to find the correct answer.",
     3: "All agents must disagree on every point. There should be no consensus whatsoever.",
-}
-
-# Choreographed mode — fixed 5-round structure with target covariance per round
-CHOREOGRAPHED_ROUND_LABELS = {
-    1: "Establishing Positions",
-    2: "Adversarial Challenge",
-    3: "Finding Convergence",
-    4: "Mediator Synthesis",
-    5: "Reviewing Synthesis",
-}
-
-CHOREOGRAPHED_COVARIANCE = {
-    1: "moderate",
-    2: "low",
-    3: "high",
-    4: "none",
-    5: "moderate-high",
-}
-
-# Per-round debate-level prompts for rounds 2 and 3 (round 1 has no prompt; 4 is mediator-only)
-_CHOREOGRAPHED_DEBATE_PROMPTS = {
-    2: DEBATE_LEVEL_PROMPTS[3],  # low covariance: all must disagree
-    3: (
-        "CONVERGENCE ROUND: Actively seek common ground. "
-        "For each point where you previously disagreed, examine whether the other agents' "
-        "evidence from their domain supports or modifies your position. "
-        "Explicitly identify every claim you can now endorse. "
-        "Minimize remaining disagreement — your goal is to find what all agents agree on."
-    ),
 }
 
 _HYPOTHESIS_SIGS = {
@@ -330,236 +315,6 @@ def format_debate_history(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def run_synthesis(
-    query: str,
-    agents: list[SpecialistAgent],
-    mediator: Mediator,
-    status_cb=None,
-) -> dict:
-    def _status(msg: str):
-        log.info(msg)
-        if status_cb:
-            status_cb(msg)
-
-    _status(f"Query (synthesis): {query}")
-    agent_hypotheses: dict[str, dict] = {}
-
-    for agent in agents:
-        _status(f"  [{agent.name}] generating hypothesis…")
-        hyp, triples = agent.initial_hypothesis(query)
-        _status(f"  [{agent.name}] extracting references…")
-        refs = agent.get_references(triples)
-        agent_hypotheses[agent.name] = {
-            "statement":  hyp,
-            "triples":    triples,
-            "references": refs,
-        }
-        _status(f"  [{agent.name}] done ({len(triples)} triples used)")
-
-    _status("  Mediator synthesizing…")
-    synthesis = mediator.synthesize(
-        query,
-        {name: d["statement"] for name, d in agent_hypotheses.items()},
-    )
-
-    return {
-        "query":            query,
-        "mode":             "synthesis",
-        "agent_hypotheses": agent_hypotheses,
-        "final_hypothesis": synthesis,
-    }
-
-
-def run_adversarial(
-    query: str,
-    agents: list[SpecialistAgent],
-    mediator: Mediator,
-    max_rounds: int,
-    debate_level: int,
-    status_cb=None,
-) -> dict:
-    def _status(msg: str):
-        log.info(msg)
-        if status_cb:
-            status_cb(msg)
-
-    _status(f"Query (adversarial, level={debate_level}, max_rounds={max_rounds}): {query}")
-    level_prompt = DEBATE_LEVEL_PROMPTS[debate_level]
-    history: list[dict] = []
-
-    # Round 0 — initial KG-grounded positions + per-agent references
-    agent_refs: dict[str, str] = {}
-    for agent in agents:
-        _status(f"  [{agent.name}] round 0 — generating hypothesis…")
-        hyp, triples = agent.initial_hypothesis(query)
-        _status(f"  [{agent.name}] round 0 — extracting references…")
-        refs = agent.get_references(triples)
-        agent_refs[agent.name] = refs
-        history.append({
-            "agent":      agent.name,
-            "round":      0,
-            "statement":  hyp,
-            "triples":    triples,
-            "references": refs,
-            "agreed":     None,   # no prior positions to agree/disagree with
-        })
-        _status(f"  [{agent.name}] round 0 complete ({len(triples)} triples used)")
-
-    rounds_completed = 0
-    for round_num in range(1, max_rounds + 1):
-        _status(f"  Debate round {round_num}/{max_rounds}")
-        history_str = format_debate_history(history)
-
-        for agent in agents:
-            _status(f"  [{agent.name}] round {round_num} — responding…")
-            response, agreed = agent.debate_response(query, history_str, level_prompt)
-            history.append({
-                "agent":      agent.name,
-                "round":      round_num,
-                "statement":  response,
-                "triples":    [],
-                "references": agent_refs[agent.name],  # carry round-0 KG refs forward
-                "agreed":     agreed,
-            })
-
-        rounds_completed = round_num
-        history_str = format_debate_history(history)
-
-        # Discriminative mode — adaptive break (MAD §2)
-        concluded, reason = mediator.can_conclude(query, history_str)
-        _status(f"  Judge: concluded={concluded} — {reason}")
-        if concluded:
-            _status("  Adaptive break: debate concluded early")
-            break
-
-    _status("  Mediator extracting final answer…")
-    final_answer = mediator.extract_answer(query, format_debate_history(history))
-
-    return {
-        "query":            query,
-        "mode":             "adversarial",
-        "debate_level":     debate_level,
-        "rounds_completed": rounds_completed,
-        "debate_history":   history,
-        "final_hypothesis": final_answer,
-    }
-
-
-def format_choreographed_history(history: list[dict]) -> str:
-    lines = []
-    for entry in history:
-        if entry["agent"] == "mediator":
-            label = "MEDIATOR"
-        else:
-            label = _AGENT_LABELS.get(entry["agent"], entry["agent"].upper())
-        round_label = CHOREOGRAPHED_ROUND_LABELS.get(entry["round"], f"Round {entry['round']}")
-        lines.append(f"[{label} — {round_label}]:\n{entry['statement']}\n")
-    return "\n".join(lines)
-
-
-def run_choreographed(
-    query: str,
-    agents: list[SpecialistAgent],
-    mediator: Mediator,
-    status_cb=None,
-) -> dict:
-    def _status(msg: str):
-        log.info(msg)
-        if status_cb:
-            status_cb(msg)
-
-    _status(f"Query (choreographed): {query}")
-    history: list[dict] = []
-    agent_refs: dict[str, str] = {}
-
-    # ── Round 1: Establish opinion (covariance: moderate) ──────────────────
-    _status("  Round 1 — establishing positions…")
-    for agent in agents:
-        _status(f"  [{agent.name}] round 1 — generating hypothesis…")
-        hyp, triples = agent.initial_hypothesis(query)
-        refs = agent.get_references(triples)
-        agent_refs[agent.name] = refs
-        history.append({
-            "agent":      agent.name,
-            "round":      1,
-            "statement":  hyp,
-            "triples":    triples,
-            "references": refs,
-            "agreed":     None,
-        })
-        _status(f"  [{agent.name}] round 1 complete ({len(triples)} triples used)")
-
-    # ── Round 2: Adversarial attack (covariance: low) ─────────────────────
-    _status("  Round 2 — adversarial challenge…")
-    for agent in agents:
-        _status(f"  [{agent.name}] round 2 — attacking…")
-        response, agreed = agent.debate_response(
-            query,
-            format_choreographed_history(history),
-            _CHOREOGRAPHED_DEBATE_PROMPTS[2],
-        )
-        history.append({
-            "agent":      agent.name,
-            "round":      2,
-            "statement":  response,
-            "triples":    [],
-            "references": agent_refs[agent.name],
-            "agreed":     agreed,
-        })
-
-    # ── Round 3: Convergence (covariance: high) ────────────────────────────
-    _status("  Round 3 — finding convergence…")
-    for agent in agents:
-        _status(f"  [{agent.name}] round 3 — converging…")
-        response, agreed = agent.debate_response(
-            query,
-            format_choreographed_history(history),
-            _CHOREOGRAPHED_DEBATE_PROMPTS[3],
-        )
-        history.append({
-            "agent":      agent.name,
-            "round":      3,
-            "statement":  response,
-            "triples":    [],
-            "references": agent_refs[agent.name],
-            "agreed":     agreed,
-        })
-
-    # ── Round 4: Mediator synthesis (covariance: none) ────────────────────
-    _status("  Round 4 — mediator synthesizing…")
-    synthesis = mediator.extract_answer(query, format_choreographed_history(history))
-    history.append({
-        "agent":      "mediator",
-        "round":      4,
-        "statement":  synthesis,
-        "triples":    [],
-        "references": "",
-        "agreed":     None,
-    })
-
-    # ── Round 5: Do you agree? (covariance: moderate-high) ────────────────
-    _status("  Round 5 — agents reviewing synthesis…")
-    history_str = format_choreographed_history(history)
-    for agent in agents:
-        _status(f"  [{agent.name}] round 5 — reviewing synthesis…")
-        response, agreed = agent.review_synthesis(query, synthesis, history_str)
-        history.append({
-            "agent":      agent.name,
-            "round":      5,
-            "statement":  response,
-            "triples":    [],
-            "references": agent_refs[agent.name],
-            "agreed":     agreed,
-        })
-
-    return {
-        "query":            query,
-        "mode":             "choreographed",
-        "debate_history":   history,
-        "final_hypothesis": synthesis,
-    }
-
-
 def get_references_from_triples(triples: list[dict], metadata: dict[int, dict]) -> str:
     """APA citations for the top-5 most-cited source papers in a triple set."""
     from collections import Counter
@@ -711,7 +466,6 @@ def load_env(env_path: Path) -> dict:
     for k, v in defaults.items():
         merged[k] = os.environ.get(k, str(v))
     return merged
-
 
 # ---------------------------------------------------------------------------
 # Entry point
