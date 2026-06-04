@@ -34,16 +34,20 @@ from orchestration import (   # noqa: E402
     LLM_MODEL,
     OLLAMA_API_KEY,
     OLLAMA_BASE_URL,
+    HypothesisGenerator,
     Mediator,
     SpecialistAgent,
     _AGENT_LABELS,
+    load_graph,
     load_metadata,
     load_toml,
     run_adversarial,
     run_choreographed,
     run_followup,
+    run_neukrag_single,
     run_synthesis,
 )
+from run_neukrag import EntityExtractor  # noqa: E402
 
 import dspy  # noqa: E402
 
@@ -96,7 +100,17 @@ def _save_artifacts(result: dict, artifact_name: str) -> Path:
     mode = result["mode"]
 
     # Normalise all modes to a flat list of history entries
-    if mode == "synthesis":
+    if mode in ("neukrag", "neukrag-inter"):
+        agent_label = "neukrag_inter" if mode == "neukrag-inter" else "neukrag"
+        entries = [{
+            "agent":      agent_label,
+            "round":      1,
+            "statement":  result["final_hypothesis"],
+            "references": result.get("references", ""),
+            "triples":    result.get("triples", []),
+            "agreed":     None,
+        }]
+    elif mode == "synthesis":
         entries = [
             {
                 "agent":      name,
@@ -201,15 +215,19 @@ with st.sidebar:
         "synthesis":     "🤝 Synthesis",
         "adversarial":   "⚔️ Adversarial",
         "choreographed": "🎼 Choreographed",
+        "neukrag":       "🔬 NeuKRAG",
+        "neukrag-inter": "🌐 NeuKRAG-inter",
     }
     mode = st.radio(
         "Mode",
-        options=["synthesis", "adversarial", "choreographed"],
+        options=["synthesis", "adversarial", "choreographed", "neukrag", "neukrag-inter"],
         format_func=_MODE_LABELS.get,
         help=(
             "Synthesis: agents generate independently, mediator integrates.\n"
             "Adversarial: MAD-style debate with rebuttals and adaptive break.\n"
-            "Choreographed: fixed 5-round arc — establish → attack → converge → synthesize → review."
+            "Choreographed: fixed 5-round arc — establish → attack → converge → synthesize → review.\n"
+            "NeuKRAG: single-agent hypothesis from the neuromorphic KG only.\n"
+            "NeuKRAG-inter: single-agent hypothesis from the unified cross-domain KG."
         ),
     )
 
@@ -292,6 +310,35 @@ def build_system(k_hops: int, max_triples: int):
                         k_hops, max_triples, metadata=metadata.get("neuromorphic")),
     ]
     return agents, Mediator()
+
+
+@st.cache_resource(show_spinner="Loading knowledge graph…")
+def build_neukrag_system(kg_name: str, k_hops: int, max_triples: int):
+    lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
+    dspy.configure(lm=lm)
+
+    cfg      = load_toml(CONFIG_PATH)
+    kg_cfg   = cfg.get("kg_paths", {})
+    meta_cfg = cfg.get("metadata_paths", {})
+
+    kg_key  = "all_kg" if kg_name == "all" else f"{kg_name}_kg"
+    graph   = load_graph(Path(kg_cfg[kg_key]).expanduser())
+
+    if kg_name == "all":
+        unified_meta: dict = {}
+        for name in ("neuroscience", "aiml", "neuromorphic"):
+            if meta_cfg.get(f"{name}_metadata"):
+                unified_meta.update(
+                    load_metadata(Path(meta_cfg[f"{name}_metadata"]).expanduser())
+                )
+        metadata = unified_meta
+    else:
+        metadata = (
+            load_metadata(Path(meta_cfg[f"{kg_name}_metadata"]).expanduser())
+            if meta_cfg.get(f"{kg_name}_metadata") else {}
+        )
+
+    return graph, metadata, EntityExtractor(), HypothesisGenerator()
 
 # ---------------------------------------------------------------------------
 # Render helpers
@@ -399,6 +446,25 @@ def render_result_in_chat(result: dict):
                 if round_num < max(c_rounds):
                     st.divider()
 
+    elif mode in ("neukrag", "neukrag-inter"):
+        triples = result.get("triples", [])
+        label   = "NeuKRAG-inter" if mode == "neukrag-inter" else "NeuKRAG"
+        with st.expander(f"{label} — KG context ({len(triples)} triples)", expanded=False):
+            refs = result.get("references", "").strip()
+            if refs:
+                st.markdown("**References**")
+                for line in refs.splitlines():
+                    if line.strip():
+                        st.markdown(f"- {line.strip()}")
+                st.divider()
+            if triples:
+                st.markdown("**Triples retrieved**")
+                for t in triples:
+                    st.markdown(
+                        f"`{t['h']}` &nbsp;—[{t['r']}]→&nbsp; `{t['t']}`",
+                        unsafe_allow_html=True,
+                    )
+
 
 def _render_save_button(result: dict, msg_idx: int):
     """Save-artifacts button + inline artifact-name prompt for one assistant message."""
@@ -474,7 +540,16 @@ placeholder = (
 )
 
 if prompt := st.chat_input(placeholder):
-    agents, mediator = build_system(k_hops, max_triples)
+    _is_neukrag = mode in ("neukrag", "neukrag-inter")
+    if _is_neukrag:
+        kg_name = "all" if mode == "neukrag-inter" else "neuromorphic"
+        neukrag_graph, neukrag_meta, neukrag_extractor, neukrag_hyp = build_neukrag_system(
+            kg_name, k_hops, max_triples
+        )
+        agents, mediator = None, None
+    else:
+        agents, mediator = build_system(k_hops, max_triples)
+        neukrag_graph = neukrag_meta = neukrag_extractor = neukrag_hyp = None
 
     # Append user message immediately
     st.session_state["messages"].append({"role": "user", "content": prompt})
@@ -492,7 +567,7 @@ if prompt := st.chat_input(placeholder):
                 result = run_followup(
                     prompt,
                     st.session_state["active_synthesis"],
-                    mediator,
+                    mediator if mediator else Mediator(),
                     status_cb=on_status,
                 )
             status_box.empty()
@@ -508,6 +583,8 @@ if prompt := st.chat_input(placeholder):
                 "synthesis":     "Running synthesis…",
                 "adversarial":   "Running adversarial debate…",
                 "choreographed": "Running choreographed debate…",
+                "neukrag":       "Running NeuKRAG…",
+                "neukrag-inter": "Running NeuKRAG-inter…",
             }.get(mode, "Running…")
             with st.spinner(spinner_msg):
                 if mode == "synthesis":
@@ -519,8 +596,15 @@ if prompt := st.chat_input(placeholder):
                         debate_level=debate_level,
                         status_cb=on_status,
                     )
-                else:
+                elif mode == "choreographed":
                     result = run_choreographed(prompt, agents, mediator, status_cb=on_status)
+                else:
+                    result = run_neukrag_single(
+                        prompt, neukrag_graph, neukrag_meta,
+                        neukrag_extractor, neukrag_hyp,
+                        k_hops=k_hops, max_triples=max_triples,
+                        mode=mode, status_cb=on_status,
+                    )
             status_box.empty()
             result_placeholder.empty()
             render_result_in_chat(result)

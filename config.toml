@@ -2,6 +2,7 @@
 aiml_kg = "~/neuromorphic-citation-network/data/kg/kg_aiml"
 neuroscience_kg = "~/neuromorphic-citation-network/data/kg/kg_neuroscience"
 neuromorphic_kg = "~/neuromorphic-citation-network/data/kg/kg_neuromorphic"
+all_kg = "~/neuromorphic-citation-network/data/kg/kg_all"
 
 [metadata_paths]
 aiml_metadata = "~/neuromorphic-citation-network/data/aiml/aiml_nodes.csv"

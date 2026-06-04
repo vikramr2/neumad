@@ -45,6 +45,7 @@ from run_neukrag import (                          # noqa: E402
     OLLAMA_API_KEY,
     OLLAMA_BASE_URL,
     EntityExtractor,
+    HypothesisGenerator,
     format_context,
     keyword_entry_points,
     bfs_subgraph,
@@ -559,6 +560,61 @@ def run_choreographed(
     }
 
 
+def get_references_from_triples(triples: list[dict], metadata: dict[int, dict]) -> str:
+    """APA citations for the top-5 most-cited source papers in a triple set."""
+    from collections import Counter
+    counts = Counter(t["document_id"] for t in triples if t.get("document_id") is not None)
+    refs = []
+    for doc_id, _ in counts.most_common(5):
+        paper = metadata.get(doc_id)
+        if paper:
+            refs.append(format_apa(paper))
+    return "\n".join(refs)
+
+
+def run_neukrag_single(
+    query: str,
+    graph,
+    metadata: dict[int, dict],
+    entity_extractor: EntityExtractor,
+    hyp_generator: HypothesisGenerator,
+    k_hops: int = 2,
+    max_triples: int = 40,
+    mode: str = "neukrag",
+    status_cb=None,
+) -> dict:
+    def _status(msg: str):
+        log.info(msg)
+        if status_cb:
+            status_cb(msg)
+
+    _status(f"Query ({mode}): {query}")
+    _status("  Extracting entities…")
+    entities = entity_extractor(query=query)
+    _status(f"  Entities: {entities}")
+
+    entry_nodes = keyword_entry_points(graph, entities)
+    if not entry_nodes:
+        log.warning("  No entry nodes — using entity names as fallback")
+        entry_nodes = set(entities)
+    _status(f"  Entry nodes: {len(entry_nodes)}")
+
+    triples = bfs_subgraph(graph, entry_nodes, k_hops=k_hops, max_triples=max_triples)
+    _status(f"  Subgraph: {len(triples)} triples")
+
+    _status("  Generating hypothesis…")
+    hypothesis = hyp_generator(query=query, graph_context=format_context(triples))
+    refs = get_references_from_triples(triples, metadata)
+
+    return {
+        "query":            query,
+        "mode":             mode,
+        "triples":          triples,
+        "references":       refs,
+        "final_hypothesis": hypothesis,
+    }
+
+
 def run_followup(
     question: str,
     previous_synthesis: str,
@@ -676,8 +732,8 @@ def main():
     env = load_env(ENV_PATH)
 
     mode = env["NEUKRAG_MODE"].lower()
-    if mode not in ("synthesis", "adversarial", "choreographed"):
-        sys.exit(f"ERROR: NEUKRAG_MODE must be 'synthesis', 'adversarial', or 'choreographed', got '{mode}'")
+    if mode not in ("synthesis", "adversarial", "choreographed", "neukrag", "neukrag-inter"):
+        sys.exit(f"ERROR: NEUKRAG_MODE must be 'synthesis', 'adversarial', 'choreographed', 'neukrag', or 'neukrag-inter', got '{mode}'")
 
     max_rounds   = int(env["NEUKRAG_DEBATE_ROUNDS"])
     debate_level = int(env["NEUKRAG_DEBATE_LEVEL"])
@@ -692,10 +748,15 @@ def main():
         "neuroscience": Path(kg_cfg.get("neuroscience_kg", "")).expanduser(),
         "aiml":         Path(kg_cfg.get("aiml_kg", "")).expanduser(),
         "neuromorphic": Path(kg_cfg.get("neuromorphic_kg", "")).expanduser(),
+        "all":          Path(kg_cfg.get("all_kg", "")).expanduser(),
     }
-    for name, path in kg_paths.items():
-        if not path.exists():
-            sys.exit(f"ERROR: KG path for '{name}' not found: {path}")
+    # Only validate paths that the chosen mode will actually use
+    required = {"neukrag": ["neuromorphic"], "neukrag-inter": ["all"]}.get(
+        mode, ["neuroscience", "aiml", "neuromorphic"]
+    )
+    for name in required:
+        if not kg_paths[name].exists():
+            sys.exit(f"ERROR: KG path for '{name}' not found: {kg_paths[name]}")
 
     metadata = {
         name: load_metadata(Path(meta_cfg[f"{name}_metadata"]).expanduser())
@@ -710,35 +771,58 @@ def main():
         f"  (debate_level={debate_level}, max_rounds={max_rounds})" if mode == "adversarial" else ""
     ))
 
-    agents = [
-        SpecialistAgent("neuroscience", kg_paths["neuroscience"], args.k_hops, args.max_triples,
-                        metadata=metadata.get("neuroscience")),
-        SpecialistAgent("aiml",         kg_paths["aiml"],         args.k_hops, args.max_triples,
-                        metadata=metadata.get("aiml")),
-        SpecialistAgent("neuromorphic", kg_paths["neuromorphic"], args.k_hops, args.max_triples,
-                        metadata=metadata.get("neuromorphic")),
-    ]
-    mediator = Mediator()
-
     queries = [args.query] if args.query else DEFAULT_QUERIES
     results = []
 
-    for query in queries:
-        if mode == "synthesis":
-            result = run_synthesis(query, agents, mediator)
-        elif mode == "adversarial":
-            result = run_adversarial(query, agents, mediator, max_rounds, debate_level)
+    if mode in ("neukrag", "neukrag-inter"):
+        kg_name = "neuromorphic" if mode == "neukrag" else "all"
+        graph = load_graph(kg_paths[kg_name])
+        if mode == "neukrag":
+            unified_meta = metadata.get("neuromorphic", {})
         else:
-            result = run_choreographed(query, agents, mediator)
+            unified_meta = {}
+            for m in metadata.values():
+                unified_meta.update(m)
+        entity_extractor = EntityExtractor()
+        hyp_generator    = HypothesisGenerator()
 
-        results.append(result)
-        print(f"\n{'='*70}")
-        print(f"QUERY:  {result['query']}")
-        print(f"MODE:   {result['mode'].upper()}", end="")
-        if mode == "adversarial":
-            print(f"  (level={result['debate_level']}, rounds={result['rounds_completed']})", end="")
-        print(f"\n{'='*70}")
-        print(result["final_hypothesis"])
+        for query in queries:
+            result = run_neukrag_single(
+                query, graph, unified_meta, entity_extractor, hyp_generator,
+                k_hops=args.k_hops, max_triples=args.max_triples, mode=mode,
+            )
+            results.append(result)
+            print(f"\n{'='*70}")
+            print(f"QUERY:  {result['query']}")
+            print(f"MODE:   {result['mode'].upper()}\n{'='*70}")
+            print(result["final_hypothesis"])
+    else:
+        agents = [
+            SpecialistAgent("neuroscience", kg_paths["neuroscience"], args.k_hops, args.max_triples,
+                            metadata=metadata.get("neuroscience")),
+            SpecialistAgent("aiml",         kg_paths["aiml"],         args.k_hops, args.max_triples,
+                            metadata=metadata.get("aiml")),
+            SpecialistAgent("neuromorphic", kg_paths["neuromorphic"], args.k_hops, args.max_triples,
+                            metadata=metadata.get("neuromorphic")),
+        ]
+        mediator = Mediator()
+
+        for query in queries:
+            if mode == "synthesis":
+                result = run_synthesis(query, agents, mediator)
+            elif mode == "adversarial":
+                result = run_adversarial(query, agents, mediator, max_rounds, debate_level)
+            else:
+                result = run_choreographed(query, agents, mediator)
+
+            results.append(result)
+            print(f"\n{'='*70}")
+            print(f"QUERY:  {result['query']}")
+            print(f"MODE:   {result['mode'].upper()}", end="")
+            if mode == "adversarial":
+                print(f"  (level={result['debate_level']}, rounds={result['rounds_completed']})", end="")
+            print(f"\n{'='*70}")
+            print(result["final_hypothesis"])
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
