@@ -1,0 +1,7 @@
+What learning rules besides STDP will become important in neuromorphic computing systems?
+Which hybrid learning paradigms combining spiking neural networks and deep learning will emerge in the future?
+What device technologies beyond CMOS will be used in neuromorphic hardware?
+How do memristor devices compare with CMOS technology in neuromorphic systems?
+Which hardware bottlenecks will drive future neuromorphic research directions?
+What neuromorphic architectures support large-scale systems?
+What are the trade-offs between biological accuracy and efficiency in neuromorphic systems?
