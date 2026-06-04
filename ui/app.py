@@ -21,7 +21,8 @@ import streamlit as st
 # Path bootstrap
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).parent.parent
-_HISTORY_FILE = _ROOT / "chat_history.json"
+_HISTORY_FILE  = _ROOT / "chat_history.json"
+_ARTIFACTS_DIR = _ROOT / "artifacts"
 sys.path.insert(0, str(_ROOT / "mad"))
 sys.path.insert(0, str(_ROOT / "neukrag"))
 
@@ -84,6 +85,66 @@ def _save_history():
         pass  # never crash the UI over a failed write
 
 
+def _save_artifacts(result: dict, artifact_name: str) -> Path:
+    import csv as _csv
+    base          = _ARTIFACTS_DIR / artifact_name
+    responses_dir = base / "responses"
+    kg_dir        = base / "kg_triples"
+    responses_dir.mkdir(parents=True, exist_ok=True)
+    kg_dir.mkdir(parents=True, exist_ok=True)
+
+    mode = result["mode"]
+
+    # Normalise all modes to a flat list of history entries
+    if mode == "synthesis":
+        entries = [
+            {
+                "agent":      name,
+                "round":      1,
+                "statement":  data["statement"],
+                "references": data["references"],
+                "triples":    data.get("triples", []),
+                "agreed":     None,
+            }
+            for name, data in result["agent_hypotheses"].items()
+        ]
+    else:
+        entries = result.get("debate_history", [])
+
+    for entry in entries:
+        agent     = entry["agent"]
+        round_num = entry["round"]
+        stem      = f"round_{round_num:02d}_{agent}"
+
+        # Response JSON (everything except raw triples)
+        resp = {k: v for k, v in entry.items() if k != "triples"}
+        with open(responses_dir / f"{stem}.json", "w", encoding="utf-8") as f:
+            json.dump(resp, f, indent=2, ensure_ascii=False, default=str)
+
+        # KG triples CSV (only when the agent queried the KG this round)
+        triples = entry.get("triples") or []
+        if triples:
+            with open(kg_dir / f"{stem}.csv", "w", newline="", encoding="utf-8") as f:
+                writer = _csv.DictWriter(f, fieldnames=["h", "r", "t", "document_id"])
+                writer.writeheader()
+                for t in triples:
+                    writer.writerow({
+                        "h":           t.get("h", ""),
+                        "r":           t.get("r", ""),
+                        "t":           t.get("t", ""),
+                        "document_id": t.get("document_id", ""),
+                    })
+
+    # Final synthesis
+    with open(responses_dir / "final_synthesis.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {"mode": mode, "query": result.get("query", ""), "final_hypothesis": result["final_hypothesis"]},
+            f, indent=2, ensure_ascii=False,
+        )
+
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Session state defaults
 # ---------------------------------------------------------------------------
@@ -97,9 +158,11 @@ def _init_state():
         st.session_state["viewing_history"]  = False
         st.session_state["history_snapshot"] = []
         st.session_state["history_loaded"]   = True
+        st.session_state["pending_save"]     = None  # msg index waiting for artifact name
     else:
         st.session_state.setdefault("viewing_history",  False)
         st.session_state.setdefault("history_snapshot", [])
+        st.session_state.setdefault("pending_save",     None)
 
 _init_state()
 
@@ -337,14 +400,43 @@ def render_result_in_chat(result: dict):
                     st.divider()
 
 
+def _render_save_button(result: dict, msg_idx: int):
+    """Save-artifacts button + inline artifact-name prompt for one assistant message."""
+    if st.session_state["pending_save"] == msg_idx:
+        name_key = f"artifact_name_{msg_idx}"
+        artifact_name = st.text_input(
+            "Artifact name", key=name_key,
+            placeholder="e.g. spiking_net_run1",
+        )
+        col_save, col_cancel = st.columns([1, 1])
+        with col_save:
+            if st.button("Save", key=f"save_confirm_{msg_idx}", type="primary"):
+                name = (artifact_name or "").strip()
+                if name:
+                    saved_path = _save_artifacts(result, name)
+                    st.session_state["pending_save"] = None
+                    st.toast(f"Saved to {saved_path.relative_to(_ROOT)}/", icon="💾")
+                    st.rerun()
+        with col_cancel:
+            if st.button("Cancel", key=f"save_cancel_{msg_idx}"):
+                st.session_state["pending_save"] = None
+                st.rerun()
+    else:
+        if st.button("💾 Save artifacts", key=f"save_btn_{msg_idx}"):
+            st.session_state["pending_save"] = msg_idx
+            st.rerun()
+
+
 def render_messages(messages: list[dict], *, read_only: bool = False):
     """Render a list of chat messages."""
-    for msg in messages:
+    for i, msg in enumerate(messages):
         with st.chat_message(msg["role"]):
             if msg["role"] == "user":
                 st.write(msg["content"])
             elif msg.get("result"):
                 render_result_in_chat(msg["result"])
+                if not read_only:
+                    _render_save_button(msg["result"], i)
             else:
                 st.markdown(msg["content"])
 
@@ -439,3 +531,4 @@ if prompt := st.chat_input(placeholder):
                 "result":  result,
             })
             _save_history()
+            _render_save_button(result, len(st.session_state["messages"]) - 1)
