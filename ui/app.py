@@ -10,6 +10,7 @@ Chat-style interface for the NeuKRAG Multi-Agent Debate system.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ import streamlit as st
 # Path bootstrap
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).parent.parent
+_HISTORY_FILE = _ROOT / "chat_history.json"
 sys.path.insert(0, str(_ROOT / "mad"))
 sys.path.insert(0, str(_ROOT / "neukrag"))
 
@@ -56,15 +58,48 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
+# History persistence
+# ---------------------------------------------------------------------------
+
+def _load_history() -> dict:
+    if _HISTORY_FILE.exists():
+        try:
+            with open(_HISTORY_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_history():
+    data = {
+        "messages":         st.session_state["messages"],
+        "conv_history":     st.session_state["conv_history"],
+        "active_synthesis": st.session_state["active_synthesis"],
+    }
+    try:
+        with open(_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        pass  # never crash the UI over a failed write
+
+
+# ---------------------------------------------------------------------------
 # Session state defaults
 # ---------------------------------------------------------------------------
 
 def _init_state():
-    st.session_state.setdefault("messages", [])          # active conversation messages
-    st.session_state.setdefault("conv_history", [])      # [{title, messages, timestamp}]
-    st.session_state.setdefault("active_synthesis", None) # latest final_hypothesis for follow-ups
-    st.session_state.setdefault("viewing_history", False) # True when showing a past conversation
-    st.session_state.setdefault("history_snapshot", [])  # messages from the selected history entry
+    if "history_loaded" not in st.session_state:
+        saved = _load_history()
+        st.session_state["messages"]         = saved.get("messages", [])
+        st.session_state["conv_history"]     = saved.get("conv_history", [])
+        st.session_state["active_synthesis"] = saved.get("active_synthesis", None)
+        st.session_state["viewing_history"]  = False
+        st.session_state["history_snapshot"] = []
+        st.session_state["history_loaded"]   = True
+    else:
+        st.session_state.setdefault("viewing_history",  False)
+        st.session_state.setdefault("history_snapshot", [])
 
 _init_state()
 
@@ -91,6 +126,7 @@ with st.sidebar:
         st.session_state["messages"]         = []
         st.session_state["active_synthesis"] = None
         st.session_state["viewing_history"]  = False
+        _save_history()
         st.rerun()
 
     st.divider()
@@ -130,12 +166,40 @@ with st.sidebar:
     if st.session_state["conv_history"]:
         st.divider()
         st.subheader("History")
+        # CSS: hide the × delete button until the row is hovered
+        st.markdown("""
+<style>
+section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]
+    > div:last-child button {
+    opacity: 0;
+    border-radius: 50% !important;
+    width: 26px !important;
+    min-width: 26px !important;
+    height: 26px !important;
+    min-height: 26px !important;
+    padding: 0 !important;
+    font-size: 16px !important;
+    line-height: 1 !important;
+    transition: opacity 0.15s ease;
+}
+section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:hover
+    > div:last-child button {
+    opacity: 1;
+}
+</style>
+""", unsafe_allow_html=True)
         for i, conv in enumerate(st.session_state["conv_history"]):
-            label = f"**{conv['title']}**\n\n_{conv['timestamp']}_"
-            if st.button(conv["title"], key=f"hist_{i}", use_container_width=True):
-                st.session_state["viewing_history"]  = True
-                st.session_state["history_snapshot"] = conv["messages"]
-                st.rerun()
+            col_btn, col_del = st.columns([7, 1])
+            with col_btn:
+                if st.button(conv["title"], key=f"hist_{i}", use_container_width=True):
+                    st.session_state["viewing_history"]  = True
+                    st.session_state["history_snapshot"] = conv["messages"]
+                    st.rerun()
+            with col_del:
+                if st.button("×", key=f"del_{i}", help="Delete from history"):
+                    st.session_state["conv_history"].pop(i)
+                    _save_history()
+                    st.rerun()
 
 # ---------------------------------------------------------------------------
 # Cached system bootstrap
@@ -346,6 +410,7 @@ if prompt := st.chat_input(placeholder):
                 "content": result["final_hypothesis"],
                 "result":  None,
             })
+            _save_history()
         else:
             spinner_msg = {
                 "synthesis":     "Running synthesis…",
@@ -373,3 +438,4 @@ if prompt := st.chat_input(placeholder):
                 "content": result["final_hypothesis"],
                 "result":  result,
             })
+            _save_history()
