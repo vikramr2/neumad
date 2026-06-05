@@ -1,3 +1,7 @@
+eval/cc/cache/
+eval/plots/
+todo/
+
 # Chat history
 chat_history.json
 
