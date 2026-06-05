@@ -110,10 +110,20 @@ def main():
 
     out_dir = artifact_dir / "plots"
     out_dir.mkdir(exist_ok=True)
+
     for ext in ("png", "pdf"):
         out_path = out_dir / f"agreeance_matrix.{ext}"
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         print(f"Saved: {out_path}")
+
+    csv_path = out_dir / "agreeance_matrix.csv"
+    val_to_label = {0.0: "disagree", 0.5: "none", 1.0: "agree"}
+    with csv_path.open("w") as f:
+        f.write("agent," + ",".join(f"R{r}" for r in sorted_rounds) + "\n")
+        for row, agent in enumerate(AGENT_LABELS):
+            vals = ",".join(val_to_label[matrix[row, col]] for col in range(num_rounds))
+            f.write(f"{agent},{vals}\n")
+    print(f"Saved: {csv_path}")
 
 
 if __name__ == "__main__":
