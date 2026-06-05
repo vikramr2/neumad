@@ -288,7 +288,7 @@ section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:hover
 
 @st.cache_resource(show_spinner="Loading knowledge graphs…")
 def build_system(k_hops: int, max_triples: int):
-    lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
+    lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY, cache=False)
     dspy.configure(lm=lm)
 
     cfg      = load_toml(CONFIG_PATH)
@@ -314,7 +314,7 @@ def build_system(k_hops: int, max_triples: int):
 
 @st.cache_resource(show_spinner="Loading knowledge graph…")
 def build_neukrag_system(kg_name: str, k_hops: int, max_triples: int):
-    lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY)
+    lm = dspy.LM(LLM_MODEL, api_base=OLLAMA_BASE_URL, api_key=OLLAMA_API_KEY, cache=False)
     dspy.configure(lm=lm)
 
     cfg      = load_toml(CONFIG_PATH)
