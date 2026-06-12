@@ -185,7 +185,7 @@ class MediatorJudgeExtractive(dspy.Signature):
              "for key claims, inline LaTeX ($...$) for equations, ``` for circuit or algorithm descriptions"
     )
 
-
+# TODO: Make the follow-up answers multi-agent too
 class FollowUpAnswer(dspy.Signature):
     """You are a neuromorphic computing expert answering a follow-up question about a
     previously generated hypothesis. Use the synthesis as your primary knowledge base.
