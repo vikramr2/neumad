@@ -111,7 +111,18 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
 
     # ── Round 4: Mediator synthesis (covariance: none) ────────────────────
     _status("  Round 4 — mediator synthesizing…")
-    synthesis = mediator.extract_answer(query, format_choreographed_history(history))
+    # Build graph from round-3 convergence statements (agents' most refined positions)
+    round3_stmts = {
+        e["agent"]: e["statement"]
+        for e in history
+        if e["round"] == 3 and e["agent"] != "mediator"
+    }
+    synthesis_result = mediator.extract_answer(
+        query,
+        format_choreographed_history(history),
+        agent_hypotheses=round3_stmts,
+    )
+    synthesis = synthesis_result["text"]
     history.append({
         "agent":      "mediator",
         "round":      4,
@@ -137,8 +148,9 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
         })
 
     return {
-        "query":            query,
-        "mode":             "choreographed",
-        "debate_history":   history,
-        "final_hypothesis": synthesis,
+        "query":                query,
+        "mode":                 "choreographed",
+        "debate_history":       history,
+        "final_hypothesis":    synthesis,
+        "argumentation_graph": synthesis_result["graph"],
     }

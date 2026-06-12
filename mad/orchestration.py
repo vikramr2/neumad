@@ -35,9 +35,11 @@ import dspy
 _ROOT     = Path(__file__).parent.parent          # /home/vr9/neumad/
 _NEUKRAG  = _ROOT / "neukrag"                     # contains run_neukrag.py
 _MAD      = Path(__file__).parent                 # mad/ (agents/ lives here)
+_ARGORA   = _ROOT / "argora-public"               # ARGORA graph utilities
 
 sys.path.insert(0, str(_NEUKRAG))
 sys.path.insert(0, str(_MAD))
+sys.path.insert(0, str(_ARGORA))
 
 from run_neukrag import (                          # noqa: E402
     DEFAULT_QUERIES,
@@ -60,6 +62,8 @@ from agents.neuromorphic import NeuromorphicHypothesis, ROLE as NEURO_M_ROLE, LA
 # Placed here (after all classes/helpers are defined) so the chambers can
 # import back from this module without triggering a circular-import error.
 # ---------------------------------------------------------------------------
+
+from argora.graph_builder import RoundGraph           # noqa: E402
 
 from chambers.synthesis     import run_synthesis      # noqa: E402
 from chambers.adversarial   import run_adversarial    # noqa: E402
@@ -100,6 +104,82 @@ _AGENT_LABELS = {
     "aiml":         AIML_LABEL,
     "neuromorphic": NEURO_M_LABEL,
 }
+
+
+# ---------------------------------------------------------------------------
+# DSPy signatures — argumentation graph parsing and graph-aware synthesis
+# ---------------------------------------------------------------------------
+
+class ExpertOutputParser(dspy.Signature):
+    """Parse a neuromorphic computing specialist's hypothesis into its core argumentative structure."""
+
+    query: str        = dspy.InputField(desc="The research query being addressed")
+    expert_name: str  = dspy.InputField(desc="Name of the specialist agent")
+    hypothesis: str   = dspy.InputField(desc="The specialist's full hypothesis text")
+    main_argument: str = dspy.OutputField(
+        desc="The single core claim of this hypothesis, in one concise sentence"
+    )
+    supporting_arguments: str = dspy.OutputField(
+        desc="Semicolon-separated supporting points or sub-claims; empty string if none"
+    )
+    attacking_arguments: str = dspy.OutputField(
+        desc="Semicolon-separated counterarguments or acknowledged limitations; empty string if none"
+    )
+
+
+class MediatorGraphSynthesis(dspy.Signature):
+    """You are a senior neuromorphic computing researcher. You have a structured
+    argumentation graph of three domain specialists' positions. Each node has an
+    integer id, an agent name, and a statement.
+
+    Reason over the graph:
+    1. Identify claims corroborated by multiple agents — prioritise these.
+    2. Identify contested claims — weigh whether attacks undermine the claim.
+    3. Identify unique insights each agent contributes.
+    4. Build a synthesis integrating the best-supported, most coherent positions.
+
+    IMPORTANT — inline attribution: whenever you write a claim that draws directly
+    from a node in the graph, wrap that text with an attribution tag:
+        <label agent="AGENT_NAME" node_id="NODE_ID">your text here</label>
+    Use the exact agent name and integer node_id from the graph JSON.
+    Label every specific claim that has a clear source; leave general prose unlabelled."""
+
+    query: str          = dspy.InputField(desc="Original research query")
+    argument_graph: str = dspy.InputField(
+        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id' and "
+             "'statement'), 'supporting' (list of {id, statement}), and 'attacking' (list of {id, statement})."
+    )
+    synthesis: str = dspy.OutputField(
+        desc="Unified hypothesis in markdown with inline <label> attribution tags. Open with a brief "
+             "summary, then ## headers for each integrated perspective and a ## Synthesis Conclusion; "
+             "bullet points for key claims, inline LaTeX ($...$) for equations, ``` for code/circuits. "
+             "Wrap sourced claims: <label agent=\"NAME\" node_id=\"ID\">claim text</label>"
+    )
+
+
+class MediatorGraphExtractAnswer(dspy.Signature):
+    """You are a moderator extracting a final answer from a completed multi-agent
+    neuromorphic debate. You have the full debate history and a structured
+    argumentation graph of the agents' most recent positions.
+
+    Use the graph to identify which positions are best supported and which are
+    contested. Synthesise the strongest, most evidence-grounded hypothesis.
+
+    IMPORTANT — inline attribution: wrap every claim drawn from a graph node with:
+        <label agent="AGENT_NAME" node_id="NODE_ID">your text here</label>
+    Use the exact agent name and integer node_id from the graph JSON."""
+
+    query: str          = dspy.InputField(desc="Original research query")
+    debate_history: str = dspy.InputField(desc="Complete debate history")
+    argument_graph: str = dspy.InputField(
+        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id' and "
+             "'statement'), 'supporting' (list of {id, statement}), and 'attacking' (list of {id, statement})."
+    )
+    final_answer: str = dspy.OutputField(
+        desc="Final synthesized hypothesis in markdown with inline <label> attribution tags. "
+             "## headers per section, bullet points for key claims, inline LaTeX ($...$) for equations. "
+             "Wrap sourced claims: <label agent=\"NAME\" node_id=\"ID\">claim text</label>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,28 +354,123 @@ class SpecialistAgent(dspy.Module):
 class Mediator(dspy.Module):
     def __init__(self):
         super().__init__()
-        self.synthesis_predict      = dspy.Predict(MediatorSynthesis)
-        self.discriminative_predict = dspy.Predict(MediatorJudgeDiscriminative)
-        self.extractive_predict     = dspy.Predict(MediatorJudgeExtractive)
-        self.followup_predict       = dspy.Predict(FollowUpAnswer)
+        self.synthesis_predict       = dspy.Predict(MediatorSynthesis)
+        self.discriminative_predict  = dspy.Predict(MediatorJudgeDiscriminative)
+        self.extractive_predict      = dspy.Predict(MediatorJudgeExtractive)
+        self.followup_predict        = dspy.Predict(FollowUpAnswer)
+        self.parse_predict           = dspy.Predict(ExpertOutputParser)
+        self.graph_synthesis_predict = dspy.Predict(MediatorGraphSynthesis)
+        self.graph_extract_predict   = dspy.Predict(MediatorGraphExtractAnswer)
 
-    def synthesize(self, query: str, hypotheses: dict[str, str]) -> str:
-        result = self.synthesis_predict(
+    def _parse_agent_output(self, query: str, agent_name: str, hypothesis: str) -> dict:
+        """Parse a hypothesis into {main_argument, supporting_arguments, attacking_arguments}."""
+        result = self.parse_predict(
             query=query,
-            neuroscience_hypothesis=hypotheses["neuroscience"],
-            aiml_hypothesis=hypotheses["aiml"],
-            neuromorphic_hypothesis=hypotheses["neuromorphic"],
+            expert_name=agent_name,
+            hypothesis=hypothesis,
         )
-        return result.synthesis.strip()
+        def _split(s: str) -> list[str]:
+            return [x.strip() for x in s.split(";") if x.strip()]
+        return {
+            "main_argument":       result.main_argument.strip(),
+            "supporting_arguments": _split(result.supporting_arguments),
+            "attacking_arguments":  _split(result.attacking_arguments),
+        }
+
+    def build_argument_graph(self, query: str, hypotheses: dict[str, str]) -> RoundGraph:
+        """Build a RoundGraph from a dict of agent_name -> hypothesis text."""
+        graph = RoundGraph(topic=query, round=0)
+        for agent_name, hypothesis in hypotheses.items():
+            parsed  = self._parse_agent_output(query, agent_name, hypothesis)
+            main_id = graph.add_main(agent_name, parsed["main_argument"])
+            for sup in parsed["supporting_arguments"]:
+                graph.add_support(agent_name, sup, main_id)
+            for att in parsed["attacking_arguments"]:
+                graph.add_attack(agent_name, att, main_id)
+        return graph
+
+    @staticmethod
+    def _build_labeled_graph_json(graph: RoundGraph) -> str:
+        """Build a JSON representation that exposes node IDs for inline attribution."""
+        gd = graph.to_dict()
+        node_map = {n["id"]: n for n in gd.get("nodes", [])}
+        supports_by_target: dict[int, list] = {}
+        attacks_by_target: dict[int, list]  = {}
+        for e in gd.get("edges", []):
+            if e["edge_type"] == "support_edge":
+                supports_by_target.setdefault(e["target"], []).append(e["source"])
+            else:
+                attacks_by_target.setdefault(e["target"], []).append(e["source"])
+        items = []
+        for node in gd.get("nodes", []):
+            if node["type"] != "main_argument":
+                continue
+            nid = node["id"]
+            items.append({
+                "agent":      node["expert"],
+                "main_claim": {"id": nid, "statement": node["statement"]},
+                "supporting": [
+                    {"id": s, "statement": node_map[s]["statement"]}
+                    for s in supports_by_target.get(nid, [])
+                    if s in node_map
+                ],
+                "attacking": [
+                    {"id": a, "statement": node_map[a]["statement"]}
+                    for a in attacks_by_target.get(nid, [])
+                    if a in node_map
+                ],
+            })
+        return json.dumps(items, indent=2, ensure_ascii=False)
+
+    def synthesize(self, query: str, hypotheses: dict[str, str]) -> dict:
+        """Build an argumentation graph then synthesize with inline label attribution.
+
+        Returns {"text": str, "graph": dict}.
+        """
+        graph       = self.build_argument_graph(query, hypotheses)
+        labeled_json = self._build_labeled_graph_json(graph)
+        result      = self.graph_synthesis_predict(
+            query=query,
+            argument_graph=labeled_json,
+        )
+        return {
+            "text":  result.synthesis.strip(),
+            "graph": graph.to_dict(),
+        }
 
     def can_conclude(self, query: str, debate_history: str) -> tuple[bool, str]:
         result    = self.discriminative_predict(query=query, debate_history=debate_history)
         concluded = result.concluded.strip().lower().startswith("yes")
         return concluded, result.reasoning.strip()
 
-    def extract_answer(self, query: str, debate_history: str) -> str:
+    def extract_answer(
+        self,
+        query: str,
+        debate_history: str,
+        *,
+        agent_hypotheses: dict[str, str] | None = None,
+    ) -> dict:
+        """Extract a final answer, optionally using a graph of agents' final positions.
+
+        Returns {"text": str, "graph": dict | None}.
+        """
+        if agent_hypotheses:
+            graph        = self.build_argument_graph(query, agent_hypotheses)
+            labeled_json = self._build_labeled_graph_json(graph)
+            result       = self.graph_extract_predict(
+                query=query,
+                debate_history=debate_history,
+                argument_graph=labeled_json,
+            )
+            return {
+                "text":  result.final_answer.strip(),
+                "graph": graph.to_dict(),
+            }
         result = self.extractive_predict(query=query, debate_history=debate_history)
-        return result.final_answer.strip()
+        return {
+            "text":  result.final_answer.strip(),
+            "graph": None,
+        }
 
     def answer_followup(self, synthesis: str, question: str) -> str:
         result = self.followup_predict(previous_synthesis=synthesis, followup_question=question)

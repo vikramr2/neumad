@@ -69,14 +69,26 @@ def run_adversarial(
             _status("  Adaptive break: debate concluded early")
             break
 
+    # Build graph from the final debate round (agents' last refined positions)
+    final_round = max(e["round"] for e in history)
+    final_agent_stmts = {
+        e["agent"]: e["statement"]
+        for e in history
+        if e["round"] == final_round and e["agent"] != "mediator"
+    }
     _status("  Mediator extracting final answer…")
-    final_answer = mediator.extract_answer(query, format_debate_history(history))
+    answer_result = mediator.extract_answer(
+        query,
+        format_debate_history(history),
+        agent_hypotheses=final_agent_stmts,
+    )
 
     return {
-        "query":            query,
-        "mode":             "adversarial",
-        "debate_level":     debate_level,
-        "rounds_completed": rounds_completed,
-        "debate_history":   history,
-        "final_hypothesis": final_answer,
+        "query":                query,
+        "mode":                 "adversarial",
+        "debate_level":         debate_level,
+        "rounds_completed":     rounds_completed,
+        "debate_history":       history,
+        "final_hypothesis":    answer_result["text"],
+        "argumentation_graph": answer_result["graph"],
     }

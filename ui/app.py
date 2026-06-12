@@ -10,11 +10,14 @@ Chat-style interface for the NeuKRAG Multi-Agent Debate system.
 
 from __future__ import annotations
 
+import html as _html
 import json
+import re as _re
 import sys
 from datetime import datetime
 from pathlib import Path
 
+import markdown as _md_lib
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -378,10 +381,295 @@ def _render_agent_columns(entries: list[dict], *, show_agreement: bool):
                             st.markdown(f"- {line.strip()}")
 
 
+# ---------------------------------------------------------------------------
+# Argumentation graph helpers
+# ---------------------------------------------------------------------------
+
+_NODE_COLORS = {
+    "main_argument":       "#2563eb",
+    "supporting_argument": "#10b981",
+    "attacking_argument":  "#ef4444",
+}
+_NODE_TYPE_LABELS = {
+    "main_argument":       "main claim",
+    "supporting_argument": "supports",
+    "attacking_argument":  "challenges",
+}
+_EXPERT_HEX = {
+    "neuroscience": "#1f6aa5",
+    "aiml":         "#2d8a4e",
+    "neuromorphic": "#8b4513",
+}
+
+
+def _graph_dict_to_dot(graph_dict: dict) -> str:
+    """Build a Graphviz DOT string from a RoundGraph.to_dict() payload."""
+    nodes = graph_dict.get("nodes", [])
+    edges = graph_dict.get("edges", [])
+    topic = (graph_dict.get("topic", "") or "")[:55]
+
+    def esc(s: str) -> str:
+        return (s or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+    def trunc(s: str, n: int = 42) -> str:
+        s = (s or "").replace("\n", " ")
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    lines = [
+        "digraph QBAF {",
+        "  rankdir=LR;",
+        '  node [shape=box style=filled fontsize=9 fontcolor=white margin="0.15,0.08"];',
+        "  edge [fontsize=8];",
+        f'  label="{esc(topic)}";',
+        "  labelloc=top; labeljust=left;",
+    ]
+
+    by_expert: dict = {}
+    for n in nodes:
+        by_expert.setdefault(n.get("expert", "unknown"), []).append(n)
+
+    for expert, expert_nodes in by_expert.items():
+        expert_color = _EXPERT_HEX.get(expert, "#6b7280")
+        lines.append(f'  subgraph "cluster_{expert}" {{')
+        lines.append(f'    label="{esc(expert)}";')
+        lines.append(f'    style=dashed; color="{expert_color}";')
+        for n in expert_nodes:
+            fill = _NODE_COLORS.get(n.get("type", ""), "#6b7280")
+            label = trunc(n.get("statement", ""))
+            lines.append(f'    {n["id"]} [label="{esc(label)}", fillcolor="{fill}"];')
+        lines.append("  }")
+
+    for e in edges:
+        is_support = e.get("edge_type", "attack_edge") == "support_edge"
+        color = "#10b981" if is_support else "#ef4444"
+        label = "supports" if is_support else "attacks"
+        lines.append(
+            f'  {e["source"]} -> {e["target"]} '
+            f'[label="{label}", color="{color}", fontcolor="{color}"];'
+        )
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _render_argumentation_graph(graph_dict: dict) -> None:
+    """Render a RoundGraph as a Graphviz chart with a colour legend."""
+    dot = _graph_dict_to_dot(graph_dict)
+    st.graphviz_chart(dot, use_container_width=True)
+
+    # Legend
+    st.markdown(
+        "<small>"
+        "<span style='color:#2563eb'>■</span> Main claim &nbsp;"
+        "<span style='color:#10b981'>■</span> Supports &nbsp;"
+        "<span style='color:#ef4444'>■</span> Challenges"
+        "</small>",
+        unsafe_allow_html=True,
+    )
+
+
+_LABEL_RE = _re.compile(
+    r'<label\s+agent=["\']?([^"\'>\s]+)["\']?\s+node_id=["\']?(\d+)["\']?\s*>(.*?)</label>',
+    _re.DOTALL,
+)
+
+_SYNTHESIS_CSS = """<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #1e293b;
+    background: transparent;
+    margin: 0;
+    padding: 6px 2px;
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 1.2em; font-weight: 700; color: #0f172a; margin: 0 0 0.8em; }
+  h2 { font-size: 1.05em; font-weight: 700; color: #1d4ed8; margin: 1.3em 0 0.35em; }
+  h3 { font-size: 0.95em; font-weight: 600; color: #1e40af; margin: 1em 0 0.25em; }
+  p  { margin: 0.35em 0; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: 0.2em 0; }
+  code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; color: #0f172a; }
+  pre  { background: #f1f5f9; padding: 10px 14px; border-radius: 8px; overflow-x: auto; }
+  strong { color: #0f172a; }
+  em { color: #475569; }
+
+  /* ── Labelled span ── */
+  .lbl {
+    position: relative;
+    display: inline;
+    border-bottom: 1.5px dotted #2563eb;
+    cursor: help;
+    border-radius: 2px;
+    padding-bottom: 1px;
+  }
+  .lbl:hover { background: #eff6ff; }
+
+  /* ── Popup ── */
+  .popup {
+    display: none;
+    position: absolute;
+    left: 0;
+    top: 1.6em;
+    width: 680px;
+    max-height: 460px;
+    background: #ffffff;
+    border: 1px solid #bfdbfe;
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.13);
+    z-index: 9999;
+    padding: 22px 26px 18px;
+    overflow-y: auto;
+    box-sizing: border-box;
+    text-align: left;
+    font-size: 14px;
+  }
+  .popup-label {
+    font-size: 0.68em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: #2563eb;
+    margin-bottom: 8px;
+  }
+  .node-card {
+    background: #f8fafc;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    border-left: 3px solid;
+  }
+  .node-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .expert-badge {
+    font-size: 0.68em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 7px;
+    border-radius: 4px;
+    color: white;
+  }
+  .node-type-badge {
+    font-size: 0.68em;
+    color: #64748b;
+    font-style: italic;
+  }
+  .node-statement {
+    font-size: 0.87em;
+    color: #1e293b;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .no-prov { color: #94a3b8; font-size: 0.87em; font-style: italic; }
+</style>"""
+
+_POPUP_HOVER_JS = """<script>
+(function() {
+  var timers = {};
+  document.querySelectorAll('.lbl').forEach(function(el) {
+    var popup = el.querySelector('.popup');
+    if (!popup) return;
+    var id = el.dataset.nid;
+    el.addEventListener('mouseenter', function() {
+      timers[id] = setTimeout(function() { popup.style.display = 'block'; }, 200);
+    });
+    el.addEventListener('mouseleave', function() {
+      clearTimeout(timers[id]);
+      popup.style.display = 'none';
+    });
+    popup.addEventListener('mouseenter', function() { clearTimeout(timers[id]); });
+    popup.addEventListener('mouseleave', function() { popup.style.display = 'none'; });
+  });
+})();
+</script>"""
+
+
+def _node_popup_card(node: dict) -> str:
+    expert  = node.get("expert", "")
+    ntype   = node.get("type", "")
+    stmt    = _html.escape(node.get("statement", ""))
+    color   = _EXPERT_HEX.get(expert, "#6b7280")
+    label   = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
+    return (
+        f'<div class="node-card" style="border-left-color:{color}">'
+        f'<div class="node-card-header">'
+        f'<span class="expert-badge" style="background:{color}">{_html.escape(expert)}</span>'
+        f'<span class="node-type-badge">{_html.escape(label)}</span>'
+        f'</div>'
+        f'<p class="node-statement">{stmt}</p>'
+        f'</div>'
+    )
+
+
+def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None:
+    """Render synthesis HTML with inline <label> tags turned into hoverable spans."""
+    node_map = {n["id"]: n for n in (graph_dict or {}).get("nodes", [])}
+
+    def _replace_label(m: _re.Match) -> str:
+        agent   = m.group(1)
+        node_id = int(m.group(2))
+        text    = m.group(3).strip()
+        node    = node_map.get(node_id)
+        if not node:
+            return _html.escape(text)
+        card = _node_popup_card(node)
+        popup = (
+            f'<span class="popup">'
+            f'<span class="popup-label">{_html.escape(agent)} · node {node_id}</span>'
+            f'{card}'
+            f'</span>'
+        )
+        return (
+            f'<span class="lbl" data-nid="{node_id}" data-agent="{_html.escape(agent)}">'
+            f'{_html.escape(text)}{popup}'
+            f'</span>'
+        )
+
+    # Strip any label tags from the markdown first so markdown() doesn't mangle them
+    plain_md = _LABEL_RE.sub(lambda m: m.group(3), synthesis_text)
+    body_html = _md_lib.markdown(plain_md, extensions=["tables", "fenced_code"])
+
+    # Now re-run the substitution on the HTML (labels survive markdown if they're inline)
+    # Instead: do label substitution on the original text, then convert to HTML
+    labelled_html = _LABEL_RE.sub(_replace_label, synthesis_text)
+    # Convert surrounding markdown (outside label tags) by doing it on a pre-processed form
+    # Strategy: replace label tags with placeholders, markdown the rest, then restore
+    placeholders: dict[str, str] = {}
+
+    def _stash(m: _re.Match) -> str:
+        key = f"\x00LABEL{len(placeholders)}\x00"
+        placeholders[key] = _replace_label(m)
+        return key
+
+    stashed = _LABEL_RE.sub(_stash, synthesis_text)
+    md_html = _md_lib.markdown(stashed, extensions=["tables", "fenced_code"])
+    for key, val in placeholders.items():
+        md_html = md_html.replace(_html.escape(key), val).replace(key, val)
+
+    full_html = (
+        f"<!DOCTYPE html><html><head>{_SYNTHESIS_CSS}</head>"
+        f"<body>{md_html}{_POPUP_HOVER_JS}</body></html>"
+    )
+    est_lines  = synthesis_text.count("\n") + 1
+    est_height = max(600, min(4000, est_lines * 30 + 220))
+    st.components.v1.html(full_html, height=est_height, scrolling=True)
+
+
 def render_result_in_chat(result: dict):
     """Render a full pipeline result inside an st.chat_message block."""
-    # Final synthesis always shown at top
-    st.markdown(result["final_hypothesis"])
+    graph = result.get("argumentation_graph")
+    text  = result["final_hypothesis"]
+
+    if graph and _LABEL_RE.search(text):
+        _render_synthesis_with_labels(text, graph)
+    elif graph:
+        st.markdown(text)
+    else:
+        st.markdown(text)
 
     # Expandable detail section
     mode = result["mode"]
@@ -464,6 +752,10 @@ def render_result_in_chat(result: dict):
                         f"`{t['h']}` &nbsp;—[{t['r']}]→&nbsp; `{t['t']}`",
                         unsafe_allow_html=True,
                     )
+
+    if graph:
+        with st.expander("Argumentation graph", expanded=False):
+            _render_argumentation_graph(graph)
 
 
 def _render_save_button(result: dict, msg_idx: int):

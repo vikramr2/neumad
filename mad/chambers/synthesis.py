@@ -26,15 +26,16 @@ def run_synthesis(query: str, agents, mediator, status_cb=None) -> dict:
         }
         _status(f"  [{agent.name}] done ({len(triples)} triples used)")
 
-    _status("  Mediator synthesizing…")
-    synthesis = mediator.synthesize(
+    _status("  Mediator building argumentation graph and synthesizing…")
+    synthesis_result = mediator.synthesize(
         query,
         {name: d["statement"] for name, d in agent_hypotheses.items()},
     )
 
     return {
-        "query":            query,
-        "mode":             "synthesis",
-        "agent_hypotheses": agent_hypotheses,
-        "final_hypothesis": synthesis,
+        "query":                query,
+        "mode":                 "synthesis",
+        "agent_hypotheses":     agent_hypotheses,
+        "final_hypothesis":    synthesis_result["text"],
+        "argumentation_graph": synthesis_result["graph"],
     }
