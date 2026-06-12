@@ -17,7 +17,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import textwrap as _textwrap
+
 import markdown as _md_lib
+import plotly.graph_objects as _go
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -402,71 +405,208 @@ _EXPERT_HEX = {
 }
 
 
-def _graph_dict_to_dot(graph_dict: dict) -> str:
-    """Build a Graphviz DOT string from a RoundGraph.to_dict() payload."""
-    nodes = graph_dict.get("nodes", [])
-    edges = graph_dict.get("edges", [])
-    topic = (graph_dict.get("topic", "") or "")[:55]
+def _hover_wrap(s: str, width: int = 58) -> str:
+    return "<br>".join(_textwrap.wrap(s or "", width=width))
 
-    def esc(s: str) -> str:
-        return (s or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
 
-    def trunc(s: str, n: int = 42) -> str:
-        s = (s or "").replace("\n", " ")
-        return s if len(s) <= n else s[: n - 1] + "…"
-
-    lines = [
-        "digraph QBAF {",
-        "  rankdir=LR;",
-        '  node [shape=box style=filled fontsize=9 fontcolor=white margin="0.15,0.08"];',
-        "  edge [fontsize=8];",
-        f'  label="{esc(topic)}";',
-        "  labelloc=top; labeljust=left;",
-    ]
-
-    by_expert: dict = {}
-    for n in nodes:
-        by_expert.setdefault(n.get("expert", "unknown"), []).append(n)
-
-    for expert, expert_nodes in by_expert.items():
-        expert_color = _EXPERT_HEX.get(expert, "#6b7280")
-        lines.append(f'  subgraph "cluster_{expert}" {{')
-        lines.append(f'    label="{esc(expert)}";')
-        lines.append(f'    style=dashed; color="{expert_color}";')
-        for n in expert_nodes:
-            fill = _NODE_COLORS.get(n.get("type", ""), "#6b7280")
-            stmt = trunc(n.get("statement", ""))
-            strength = n.get("qsem_strength")
-            slabel = f" [{strength:.2f}]" if strength is not None else ""
-            lines.append(f'    {n["id"]} [label="{esc(stmt)}{esc(slabel)}", fillcolor="{fill}"];')
-        lines.append("  }")
-
-    for e in edges:
-        is_support = e.get("edge_type", "attack_edge") == "support_edge"
-        color = "#10b981" if is_support else "#ef4444"
-        label = "supports" if is_support else "attacks"
-        lines.append(
-            f'  {e["source"]} -> {e["target"]} '
-            f'[label="{label}", color="{color}", fontcolor="{color}"];'
-        )
-    lines.append("}")
-    return "\n".join(lines)
+def _hex_rgba(hex_color: str, alpha: float) -> str:
+    """Convert a #rrggbb hex string to an rgba() string with the given alpha."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 
 def _render_argumentation_graph(graph_dict: dict) -> None:
-    """Render a RoundGraph as a Graphviz chart with a colour legend."""
-    dot = _graph_dict_to_dot(graph_dict)
-    st.graphviz_chart(dot, use_container_width=True)
+    """Render a QBAF as an interactive Plotly graph with per-node hover cards."""
+    nodes = graph_dict.get("nodes", [])
+    edges = graph_dict.get("edges", [])
+    if not nodes:
+        st.info("No argumentation graph available.")
+        return
 
-    # Legend
-    st.markdown(
-        "<small>"
-        "<span style='color:#2563eb'>■</span> Main claim &nbsp;"
-        "<span style='color:#10b981'>■</span> Supports &nbsp;"
-        "<span style='color:#ef4444'>■</span> Challenges"
-        "</small>",
-        unsafe_allow_html=True,
+    node_map = {n["id"]: n for n in nodes}
+
+    # ── Column layout ────────────────────────────────────────────────────────
+    expert_order = ["neuroscience", "aiml", "neuromorphic"]
+    seen: set[str] = set()
+    actual_experts: list[str] = []
+    for exp in expert_order:
+        if any(n["expert"] == exp for n in nodes):
+            actual_experts.append(exp)
+            seen.add(exp)
+    for n in nodes:
+        if n["expert"] not in seen:
+            actual_experts.append(n["expert"])
+            seen.add(n["expert"])
+
+    n_exp = len(actual_experts)
+    col_x = {exp: (i + 0.5) / n_exp for i, exp in enumerate(actual_experts)}
+    col_half = 0.42 / n_exp  # half-width of each column
+
+    # Group nodes by expert
+    by_expert: dict[str, list] = {exp: [] for exp in actual_experts}
+    for n in nodes:
+        by_expert[n["expert"]].append(n)
+
+    # ── Assign positions ────────────────────────────────────────────────────
+    node_pos: dict[int, tuple[float, float]] = {}
+    for exp in actual_experts:
+        xc = col_x[exp]
+        exp_nodes = by_expert[exp]
+        mains  = [n for n in exp_nodes if n["type"] == "main_argument"]
+        others = [n for n in exp_nodes if n["type"] != "main_argument"]
+
+        for mn in mains:
+            node_pos[mn["id"]] = (xc, 0.82)
+
+        n_o = len(others)
+        # Spread others in a grid below the main node
+        cols_per_row = 3
+        row_gap, col_gap = 0.22, col_half * 0.6
+        for i, nd in enumerate(others):
+            row, col = divmod(i, cols_per_row)
+            x_off = (col - (min(n_o, cols_per_row) - 1) / 2) * col_gap
+            node_pos[nd["id"]] = (xc + x_off, 0.52 - row * row_gap)
+
+    # ── Edge arrow annotations ───────────────────────────────────────────────
+    arrow_annotations: list[dict] = []
+    edge_line_traces: list[_go.Scatter] = []
+    for e in edges:
+        src, tgt = e["source"], e["target"]
+        if src not in node_pos or tgt not in node_pos:
+            continue
+        x0, y0 = node_pos[src]
+        x1, y1 = node_pos[tgt]
+        is_sup = e["edge_type"] == "support_edge"
+        color  = "#10b981" if is_sup else "#ef4444"
+        arrow_annotations.append(dict(
+            x=x1, y=y1, ax=x0, ay=y0,
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True,
+            arrowhead=3, arrowsize=1.2, arrowwidth=1.6,
+            arrowcolor=color,
+        ))
+        # Thin line body so the arrow shaft is visible beyond the arrowhead
+        edge_line_traces.append(_go.Scatter(
+            x=[x0, x1, None], y=[y0, y1, None],
+            mode="lines",
+            line=dict(color=color, width=1.4),
+            hoverinfo="none",
+            showlegend=False,
+        ))
+
+    # ── Node scatter trace ───────────────────────────────────────────────────
+    nx_l, ny_l, nc_l, ns_l, nh_l = [], [], [], [], []
+    for nid, (x, y) in node_pos.items():
+        node = node_map.get(nid)
+        if not node:
+            continue
+        nx_l.append(x)
+        ny_l.append(y)
+
+        exp   = node.get("expert", "")
+        ntype = node.get("type", "")
+        hex_c = _EXPERT_HEX.get(exp, "#6b7280")
+        nc_l.append(hex_c)
+        ns_l.append(18 if ntype == "main_argument" else 11)
+
+        # Hover card
+        stmt     = node.get("statement", "")
+        strength = node.get("qsem_strength")
+        type_lbl = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
+        agent_lbl = _AGENT_LABELS.get(exp, exp)
+
+        if strength is not None:
+            filled = round(strength * 10)
+            bar    = "▓" * filled + "░" * (10 - filled)
+            s_clr  = "#10b981" if strength >= 0.6 else ("#f59e0b" if strength >= 0.4 else "#ef4444")
+            s_line = f"<br><b>Strength</b>: {bar} {strength:.2f}"
+        else:
+            s_line = ""
+
+        nh_l.append(
+            f"<b>{agent_lbl}</b>  ·  <i>{type_lbl}</i>"
+            f"{s_line}"
+            f"<br><br>{_hover_wrap(stmt)}"
+        )
+
+    node_trace = _go.Scatter(
+        x=nx_l, y=ny_l,
+        mode="markers",
+        marker=dict(
+            size=ns_l,
+            color=nc_l,
+            line=dict(width=2, color="white"),
+        ),
+        hovertext=nh_l,
+        hoverinfo="text",
+        hoverlabel=dict(
+            bgcolor="white",
+            bordercolor="#cbd5e1",
+            font=dict(family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+                      size=12, color="#1e293b"),
+            align="left",
+            namelength=0,
+        ),
+        showlegend=False,
     )
+
+    # ── Background column shapes ─────────────────────────────────────────────
+    shapes: list[dict] = []
+    for exp in actual_experts:
+        xc   = col_x[exp]
+        hex_c = _EXPERT_HEX.get(exp, "#6b7280")
+        shapes.append(dict(
+            type="rect",
+            x0=xc - col_half, x1=xc + col_half,
+            y0=-0.08, y1=0.97,
+            fillcolor=_hex_rgba(hex_c, 0.07),
+            line=dict(color=_hex_rgba(hex_c, 0.35), width=1, dash="dot"),
+            layer="below",
+        ))
+
+    # ── Annotations: expert labels + edge legend ─────────────────────────────
+    annotations = list(arrow_annotations)
+    for exp in actual_experts:
+        xc    = col_x[exp]
+        hex_c = _EXPERT_HEX.get(exp, "#6b7280")
+        annotations.append(dict(
+            x=xc, y=0.965,
+            xref="x", yref="y",
+            text=f"<b>{_AGENT_LABELS.get(exp, exp)}</b>",
+            showarrow=False,
+            font=dict(size=11, color=hex_c),
+            xanchor="center", yanchor="bottom",
+        ))
+    # Edge-type legend (paper coords, bottom-left)
+    for i, (color, label) in enumerate([("#10b981", "supports"), ("#ef4444", "challenges")]):
+        annotations.append(dict(
+            x=0.01 + i * 0.14, y=0.01,
+            xref="paper", yref="paper",
+            text=f'<span style="color:{color}">——▶</span> {label}',
+            showarrow=False,
+            font=dict(size=11, color="#64748b"),
+            xanchor="left", yanchor="bottom",
+        ))
+
+    fig = _go.Figure(
+        data=edge_line_traces + [node_trace],
+        layout=_go.Layout(
+            showlegend=False,
+            hovermode="closest",
+            margin=dict(l=5, r=5, t=8, b=28),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
+                       range=[-0.01, 1.01]),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False,
+                       range=[-0.12, 1.0]),
+            shapes=shapes,
+            annotations=annotations,
+            plot_bgcolor="white",
+            paper_bgcolor="white",
+            height=460,
+        ),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 _LABEL_RE = _re.compile(
@@ -681,15 +821,7 @@ def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None
             f'</span>'
         )
 
-    # Strip any label tags from the markdown first so markdown() doesn't mangle them
-    plain_md = _LABEL_RE.sub(lambda m: m.group(3), synthesis_text)
-    body_html = _md_lib.markdown(plain_md, extensions=["tables", "fenced_code"])
-
-    # Now re-run the substitution on the HTML (labels survive markdown if they're inline)
-    # Instead: do label substitution on the original text, then convert to HTML
-    labelled_html = _LABEL_RE.sub(_replace_label, synthesis_text)
-    # Convert surrounding markdown (outside label tags) by doing it on a pre-processed form
-    # Strategy: replace label tags with placeholders, markdown the rest, then restore
+    # Strategy: stash label tags as placeholders, markdown the rest, then restore
     placeholders: dict[str, str] = {}
 
     def _stash(m: _re.Match) -> str:
