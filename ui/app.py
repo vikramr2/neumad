@@ -435,8 +435,10 @@ def _graph_dict_to_dot(graph_dict: dict) -> str:
         lines.append(f'    style=dashed; color="{expert_color}";')
         for n in expert_nodes:
             fill = _NODE_COLORS.get(n.get("type", ""), "#6b7280")
-            label = trunc(n.get("statement", ""))
-            lines.append(f'    {n["id"]} [label="{esc(label)}", fillcolor="{fill}"];')
+            stmt = trunc(n.get("statement", ""))
+            strength = n.get("qsem_strength")
+            slabel = f" [{strength:.2f}]" if strength is not None else ""
+            lines.append(f'    {n["id"]} [label="{esc(stmt)}{esc(slabel)}", fillcolor="{fill}"];')
         lines.append("  }")
 
     for e in edges:
@@ -565,6 +567,38 @@ _SYNTHESIS_CSS = """<style>
     margin: 0;
   }
   .no-prov { color: #94a3b8; font-size: 0.87em; font-style: italic; }
+
+  /* ── Strength bar ── */
+  .strength-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .strength-label {
+    font-size: 0.68em;
+    color: #64748b;
+    white-space: nowrap;
+    min-width: 110px;
+  }
+  .strength-bar-bg {
+    flex: 1;
+    height: 5px;
+    background: #e2e8f0;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .strength-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  .strength-val {
+    font-size: 0.72em;
+    font-weight: 600;
+    min-width: 30px;
+    text-align: right;
+  }
 </style>"""
 
 _POPUP_HOVER_JS = """<script>
@@ -588,18 +622,36 @@ _POPUP_HOVER_JS = """<script>
 </script>"""
 
 
+def _strength_bar_html(strength: float | None) -> str:
+    if strength is None:
+        return ""
+    pct   = int(strength * 100)
+    color = "#10b981" if strength >= 0.6 else ("#f59e0b" if strength >= 0.4 else "#ef4444")
+    return (
+        f'<div class="strength-row">'
+        f'<span class="strength-label">Dialectical strength</span>'
+        f'<div class="strength-bar-bg">'
+        f'<div class="strength-bar-fill" style="width:{pct}%;background:{color}"></div>'
+        f'</div>'
+        f'<span class="strength-val" style="color:{color}">{strength:.2f}</span>'
+        f'</div>'
+    )
+
+
 def _node_popup_card(node: dict) -> str:
-    expert  = node.get("expert", "")
-    ntype   = node.get("type", "")
-    stmt    = _html.escape(node.get("statement", ""))
-    color   = _EXPERT_HEX.get(expert, "#6b7280")
-    label   = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
+    expert   = node.get("expert", "")
+    ntype    = node.get("type", "")
+    stmt     = _html.escape(node.get("statement", ""))
+    color    = _EXPERT_HEX.get(expert, "#6b7280")
+    label    = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
+    strength = node.get("qsem_strength")
     return (
         f'<div class="node-card" style="border-left-color:{color}">'
         f'<div class="node-card-header">'
         f'<span class="expert-badge" style="background:{color}">{_html.escape(expert)}</span>'
         f'<span class="node-type-badge">{_html.escape(label)}</span>'
         f'</div>'
+        f'{_strength_bar_html(strength)}'
         f'<p class="node-statement">{stmt}</p>'
         f'</div>'
     )

@@ -63,7 +63,9 @@ from agents.neuromorphic import NeuromorphicHypothesis, ROLE as NEURO_M_ROLE, LA
 # import back from this module without triggering a circular-import error.
 # ---------------------------------------------------------------------------
 
-from argora.graph_builder import RoundGraph           # noqa: E402
+from argora.graph_builder import RoundGraph                          # noqa: E402
+from argora.qsem import compute_strengths_single_pass                # noqa: E402
+from argora.similarity_check import Similarity, calculate_co_pruning # noqa: E402
 
 from chambers.synthesis     import run_synthesis      # noqa: E402
 from chambers.adversarial   import run_adversarial    # noqa: E402
@@ -111,30 +113,58 @@ _AGENT_LABELS = {
 # ---------------------------------------------------------------------------
 
 class ExpertOutputParser(dspy.Signature):
-    """Parse a neuromorphic computing specialist's hypothesis into its core argumentative structure."""
+    """Parse a neuromorphic computing specialist's hypothesis into its core argumentative structure.
+    Extract only arguments the expert is making IN SUPPORT of their own position."""
 
     query: str        = dspy.InputField(desc="The research query being addressed")
     expert_name: str  = dspy.InputField(desc="Name of the specialist agent")
     hypothesis: str   = dspy.InputField(desc="The specialist's full hypothesis text")
     main_argument: str = dspy.OutputField(
-        desc="The single core claim of this hypothesis, in one concise sentence"
+        desc="The single core claim of this hypothesis — the expert's direct answer, in one concise sentence"
     )
     supporting_arguments: str = dspy.OutputField(
-        desc="Semicolon-separated supporting points or sub-claims; empty string if none"
+        desc="Semicolon-separated supporting sub-claims or evidence that STRENGTHEN this expert's main claim; "
+             "empty string if none. Do NOT include attacks on other experts here."
     )
-    attacking_arguments: str = dspy.OutputField(
-        desc="Semicolon-separated counterarguments or acknowledged limitations; empty string if none"
+
+
+class PeerArgumentElicitor(dspy.Signature):
+    """You are a senior mediator in a neuromorphic computing research debate.
+    An expert from one domain has made a main claim. A peer expert from a different
+    domain must now evaluate it from their domain perspective.
+
+    Produce a single, concise, domain-grounded reaction (≤ 60 words).
+    The stance must be 'agree' if the peer's expertise supports the claim,
+    or 'disagree' if their expertise reveals a flaw, limitation, or contradiction."""
+
+    query: str         = dspy.InputField(desc="The research query being debated")
+    author_name: str   = dspy.InputField(desc="Name of the expert who made the main claim")
+    main_argument: str = dspy.InputField(desc="The main claim being evaluated")
+    peer_name: str     = dspy.InputField(desc="Name of the peer expert evaluating this claim")
+    peer_hypothesis: str = dspy.InputField(
+        desc="The peer expert's own position on the query — use this to ground their reaction"
+    )
+    stance: str = dspy.OutputField(
+        desc="Exactly 'agree' or 'disagree' — whether the peer's domain perspective supports or challenges the main argument"
+    )
+    reasoning: str = dspy.OutputField(
+        desc="One concise sentence (≤ 60 words) giving the peer's key reason from their domain expertise"
     )
 
 
 class MediatorGraphSynthesis(dspy.Signature):
     """You are a senior neuromorphic computing researcher. You have a structured
-    argumentation graph of three domain specialists' positions. Each node has an
-    integer id, an agent name, and a statement.
+    argumentation graph of three domain specialists' positions computed using
+    DFQuAD quantitative bipolar argumentation semantics (Baroni et al.).
+
+    Each node has an integer id, an agent name, a statement, and a 'strength'
+    value in [0, 1] representing its dialectical acceptability — how well-supported
+    it is after accounting for all supporting and attacking arguments in the graph.
+    Strength > 0.6 is well-supported; < 0.4 is significantly undermined.
 
     Reason over the graph:
-    1. Identify claims corroborated by multiple agents — prioritise these.
-    2. Identify contested claims — weigh whether attacks undermine the claim.
+    1. Prioritise claims with high dialectical strength (> 0.6).
+    2. Treat contested claims (low strength) with scepticism; note the tension.
     3. Identify unique insights each agent contributes.
     4. Build a synthesis integrating the best-supported, most coherent positions.
 
@@ -146,8 +176,9 @@ class MediatorGraphSynthesis(dspy.Signature):
 
     query: str          = dspy.InputField(desc="Original research query")
     argument_graph: str = dspy.InputField(
-        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id' and "
-             "'statement'), 'supporting' (list of {id, statement}), and 'attacking' (list of {id, statement})."
+        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id', "
+             "'statement', 'strength'), 'supporting' and 'attacking' sub-arguments (each with "
+             "'id', 'statement', 'strength'). Strength ∈ [0,1] is DFQuAD dialectical acceptability."
     )
     synthesis: str = dspy.OutputField(
         desc="Unified hypothesis in markdown with inline <label> attribution tags. Open with a brief "
@@ -160,10 +191,12 @@ class MediatorGraphSynthesis(dspy.Signature):
 class MediatorGraphExtractAnswer(dspy.Signature):
     """You are a moderator extracting a final answer from a completed multi-agent
     neuromorphic debate. You have the full debate history and a structured
-    argumentation graph of the agents' most recent positions.
+    argumentation graph of the agents' most recent positions computed using
+    DFQuAD quantitative bipolar argumentation semantics.
 
-    Use the graph to identify which positions are best supported and which are
-    contested. Synthesise the strongest, most evidence-grounded hypothesis.
+    Each node has a 'strength' ∈ [0,1] — its dialectical acceptability after
+    accounting for all supports and attacks. Prioritise high-strength claims;
+    note tensions around low-strength ones.
 
     IMPORTANT — inline attribution: wrap every claim drawn from a graph node with:
         <label agent="AGENT_NAME" node_id="NODE_ID">your text here</label>
@@ -172,8 +205,9 @@ class MediatorGraphExtractAnswer(dspy.Signature):
     query: str          = dspy.InputField(desc="Original research query")
     debate_history: str = dspy.InputField(desc="Complete debate history")
     argument_graph: str = dspy.InputField(
-        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id' and "
-             "'statement'), 'supporting' (list of {id, statement}), and 'attacking' (list of {id, statement})."
+        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id', "
+             "'statement', 'strength'), 'supporting' and 'attacking' sub-arguments (each with "
+             "'id', 'statement', 'strength'). Strength ∈ [0,1] is DFQuAD dialectical acceptability."
     )
     final_answer: str = dspy.OutputField(
         desc="Final synthesized hypothesis in markdown with inline <label> attribution tags. "
@@ -220,24 +254,6 @@ class ChoreographedAgreementResponse(dspy.Signature):
 # ---------------------------------------------------------------------------
 # DSPy signatures — mediator
 # ---------------------------------------------------------------------------
-
-class MediatorSynthesis(dspy.Signature):
-    """You are a senior neuromorphic computing researcher synthesizing independent hypotheses
-    from three domain specialists into a single unified proposal. Integrate:
-      - biological plausibility (neuroscience)
-      - learning performance (AI/ML)
-      - energy-efficient memristor implementability (neuromorphic hardware)
-    Produce a coherent, actionable design that honours all three perspectives. Write 4-5 paragraphs."""
-
-    query: str                   = dspy.InputField(desc="Original research query")
-    neuroscience_hypothesis: str = dspy.InputField(desc="Neuroscience agent hypothesis (bio-realism)")
-    aiml_hypothesis: str         = dspy.InputField(desc="AI/ML agent hypothesis (performance/accuracy)")
-    neuromorphic_hypothesis: str = dspy.InputField(desc="Neuromorphic agent hypothesis (energy/memristors)")
-    synthesis: str               = dspy.OutputField(
-        desc="Unified hypothesis in markdown: open with a brief summary, then use ## headers "
-             "for each integrated perspective and a ## Conclusion section; bullet points for "
-             "key claims, inline LaTeX ($...$) for equations, ``` for circuit or algorithm descriptions"
-    )
 
 
 class MediatorJudgeDiscriminative(dspy.Signature):
@@ -351,19 +367,28 @@ class SpecialistAgent(dspy.Module):
         return result.response.strip(), agreed
 
 
+_CO_PRUNING_LAMBDA = 0.82   # cosine similarity threshold for contextual orthogonality
+
+
 class Mediator(dspy.Module):
     def __init__(self):
         super().__init__()
-        self.synthesis_predict       = dspy.Predict(MediatorSynthesis)
         self.discriminative_predict  = dspy.Predict(MediatorJudgeDiscriminative)
         self.extractive_predict      = dspy.Predict(MediatorJudgeExtractive)
         self.followup_predict        = dspy.Predict(FollowUpAnswer)
         self.parse_predict           = dspy.Predict(ExpertOutputParser)
+        self.peer_elicit_predict     = dspy.Predict(PeerArgumentElicitor)
         self.graph_synthesis_predict = dspy.Predict(MediatorGraphSynthesis)
         self.graph_extract_predict   = dspy.Predict(MediatorGraphExtractAnswer)
+        self._similarity: Similarity | None = None
+
+    def _get_similarity(self) -> Similarity:
+        if self._similarity is None:
+            self._similarity = Similarity()
+        return self._similarity
 
     def _parse_agent_output(self, query: str, agent_name: str, hypothesis: str) -> dict:
-        """Parse a hypothesis into {main_argument, supporting_arguments, attacking_arguments}."""
+        """Parse a hypothesis into {main_argument, supporting_arguments}."""
         result = self.parse_predict(
             query=query,
             expert_name=agent_name,
@@ -372,26 +397,92 @@ class Mediator(dspy.Module):
         def _split(s: str) -> list[str]:
             return [x.strip() for x in s.split(";") if x.strip()]
         return {
-            "main_argument":       result.main_argument.strip(),
+            "main_argument":        result.main_argument.strip(),
             "supporting_arguments": _split(result.supporting_arguments),
-            "attacking_arguments":  _split(result.attacking_arguments),
         }
 
     def build_argument_graph(self, query: str, hypotheses: dict[str, str]) -> RoundGraph:
-        """Build a RoundGraph from a dict of agent_name -> hypothesis text."""
+        """Build a RoundGraph using the ARGORA methodology:
+        - Phase 1: each agent's main claim + their own supporting sub-arguments
+        - Phase 2: every peer agent evaluates each main claim (agree/disagree)
+        - Contextual orthogonality pruning filters near-duplicate arguments
+        """
         graph = RoundGraph(topic=query, round=0)
+
+        # ── Phase 1: add all main claims + author supporting arguments ───────
+        parsed_by_agent: dict[str, dict] = {}
+        main_ids: dict[str, int] = {}
         for agent_name, hypothesis in hypotheses.items():
-            parsed  = self._parse_agent_output(query, agent_name, hypothesis)
+            parsed = self._parse_agent_output(query, agent_name, hypothesis)
             main_id = graph.add_main(agent_name, parsed["main_argument"])
-            for sup in parsed["supporting_arguments"]:
-                graph.add_support(agent_name, sup, main_id)
-            for att in parsed["attacking_arguments"]:
-                graph.add_attack(agent_name, att, main_id)
+            main_ids[agent_name] = main_id
+            parsed_by_agent[agent_name] = parsed
+
+        # All main claim texts — used as "parent context" for pruning
+        main_stmts = [p["main_argument"] for p in parsed_by_agent.values()]
+        sim = self._get_similarity()
+
+        # ── Phase 2: per main claim, collect author supports + peer reactions ─
+        for target_agent, target_parsed in parsed_by_agent.items():
+            main_id   = main_ids[target_agent]
+            main_stmt = target_parsed["main_argument"]
+
+            candidates: list[dict] = []
+
+            # Author's own supporting sub-arguments
+            for sup in target_parsed["supporting_arguments"]:
+                candidates.append({
+                    "expert":   target_agent,
+                    "statement": sup,
+                    "polarity":  "support",
+                })
+
+            # Peer reactions: every other agent evaluates this main claim
+            for peer_agent in parsed_by_agent:
+                if peer_agent == target_agent:
+                    continue
+                try:
+                    result = self.peer_elicit_predict(
+                        query=query,
+                        author_name=target_agent,
+                        main_argument=main_stmt,
+                        peer_name=peer_agent,
+                        peer_hypothesis=hypotheses[peer_agent],
+                    )
+                    stance    = result.stance.strip().lower()
+                    reasoning = result.reasoning.strip()
+                except Exception:
+                    continue
+                if not reasoning:
+                    continue
+                polarity = "support" if stance.startswith("agree") else "attack"
+                candidates.append({
+                    "expert":    peer_agent,
+                    "statement": reasoning,
+                    "polarity":  polarity,
+                })
+
+            # Contextual orthogonality pruning
+            selected = calculate_co_pruning(
+                main_stmt,
+                candidates,
+                parent_statements=main_stmts,
+                tree_level=1,
+                co_pruning_lambda=_CO_PRUNING_LAMBDA,
+                similarity_model=sim,
+            )
+
+            for cand in selected:
+                if cand["polarity"] == "support":
+                    graph.add_support_to(cand["expert"], cand["statement"], main_id)
+                else:
+                    graph.add_attack_to(cand["expert"], cand["statement"], main_id)
+
         return graph
 
     @staticmethod
-    def _build_labeled_graph_json(graph: RoundGraph) -> str:
-        """Build a JSON representation that exposes node IDs for inline attribution."""
+    def _build_labeled_graph_json(graph: RoundGraph, strengths: dict[int, float]) -> str:
+        """Build JSON with node IDs and DFQuAD strengths for LLM inline attribution."""
         gd = graph.to_dict()
         node_map = {n["id"]: n for n in gd.get("nodes", [])}
         supports_by_target: dict[int, list] = {}
@@ -401,6 +492,10 @@ class Mediator(dspy.Module):
                 supports_by_target.setdefault(e["target"], []).append(e["source"])
             else:
                 attacks_by_target.setdefault(e["target"], []).append(e["source"])
+
+        def _strength(nid: int) -> float:
+            return round(strengths.get(nid, node_map.get(nid, {}).get("strength", 0.5)), 3)
+
         items = []
         for node in gd.get("nodes", []):
             if node["type"] != "main_argument":
@@ -408,34 +503,44 @@ class Mediator(dspy.Module):
             nid = node["id"]
             items.append({
                 "agent":      node["expert"],
-                "main_claim": {"id": nid, "statement": node["statement"]},
+                "main_claim": {"id": nid, "statement": node["statement"], "strength": _strength(nid)},
                 "supporting": [
-                    {"id": s, "statement": node_map[s]["statement"]}
+                    {"id": s, "statement": node_map[s]["statement"], "strength": _strength(s)}
                     for s in supports_by_target.get(nid, [])
                     if s in node_map
                 ],
                 "attacking": [
-                    {"id": a, "statement": node_map[a]["statement"]}
+                    {"id": a, "statement": node_map[a]["statement"], "strength": _strength(a)}
                     for a in attacks_by_target.get(nid, [])
                     if a in node_map
                 ],
             })
         return json.dumps(items, indent=2, ensure_ascii=False)
 
+    @staticmethod
+    def _enrich_graph_dict(graph: RoundGraph, strengths: dict[int, float]) -> dict:
+        """Return to_dict() payload enriched with qsem_strength on every node."""
+        gd = graph.to_dict()
+        for node in gd.get("nodes", []):
+            node["qsem_strength"] = round(
+                strengths.get(node["id"], node.get("strength", 0.5)), 3
+            )
+        return gd
+
     def synthesize(self, query: str, hypotheses: dict[str, str]) -> dict:
-        """Build an argumentation graph then synthesize with inline label attribution.
+        """Build an argumentation graph, compute DFQuAD strengths, then synthesize.
 
         Returns {"text": str, "graph": dict}.
         """
-        graph       = self.build_argument_graph(query, hypotheses)
-        labeled_json = self._build_labeled_graph_json(graph)
-        result      = self.graph_synthesis_predict(
+        graph     = self.build_argument_graph(query, hypotheses)
+        strengths = compute_strengths_single_pass(graph, semantics="DFQuADModel")
+        result    = self.graph_synthesis_predict(
             query=query,
-            argument_graph=labeled_json,
+            argument_graph=self._build_labeled_graph_json(graph, strengths),
         )
         return {
             "text":  result.synthesis.strip(),
-            "graph": graph.to_dict(),
+            "graph": self._enrich_graph_dict(graph, strengths),
         }
 
     def can_conclude(self, query: str, debate_history: str) -> tuple[bool, str]:
@@ -455,16 +560,16 @@ class Mediator(dspy.Module):
         Returns {"text": str, "graph": dict | None}.
         """
         if agent_hypotheses:
-            graph        = self.build_argument_graph(query, agent_hypotheses)
-            labeled_json = self._build_labeled_graph_json(graph)
-            result       = self.graph_extract_predict(
+            graph     = self.build_argument_graph(query, agent_hypotheses)
+            strengths = compute_strengths_single_pass(graph, semantics="DFQuADModel")
+            result    = self.graph_extract_predict(
                 query=query,
                 debate_history=debate_history,
-                argument_graph=labeled_json,
+                argument_graph=self._build_labeled_graph_json(graph, strengths),
             )
             return {
                 "text":  result.final_answer.strip(),
-                "graph": graph.to_dict(),
+                "graph": self._enrich_graph_dict(graph, strengths),
             }
         result = self.extractive_predict(query=query, debate_history=debate_history)
         return {
