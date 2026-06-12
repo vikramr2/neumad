@@ -614,6 +614,30 @@ _LABEL_RE = _re.compile(
     _re.DOTALL,
 )
 
+# Matches LaTeX math blocks that the Python markdown library would mangle.
+# Order matters: longer/greedier patterns first.
+_MATH_RE = _re.compile(
+    r'\$\$[\s\S]*?\$\$'                              # $$...$$ display
+    r'|\\\[[\s\S]*?\\\]'                             # \[...\] display
+    r'|\\begin\{[^}]+\}[\s\S]*?\\end\{[^}]+\}'      # \begin{env}...\end{env}
+    r'|\$[^$\n]+?\$',                                # $...$ inline
+    _re.DOTALL,
+)
+
+_MATHJAX_SCRIPT = """<script>
+MathJax = {
+  tex: {
+    inlineMath: [['$', '$']],
+    displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+    processEscapes: true,
+    processEnvironments: true,
+    packages: {'[+]': ['ams']}
+  },
+  options: { skipHtmlTags: ['script','noscript','style','textarea'] }
+};
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>"""
+
 _SYNTHESIS_CSS = """<style>
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -821,21 +845,30 @@ def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None
             f'</span>'
         )
 
-    # Strategy: stash label tags as placeholders, markdown the rest, then restore
+    # Stash both <label> tags and LaTeX math blocks before markdown processes the
+    # text, so the markdown library can't mangle subscripts, backslashes, etc.
     placeholders: dict[str, str] = {}
 
-    def _stash(m: _re.Match) -> str:
-        key = f"\x00LABEL{len(placeholders)}\x00"
+    def _stash_label(m: _re.Match) -> str:
+        key = f"\x00PH{len(placeholders)}\x00"
         placeholders[key] = _replace_label(m)
         return key
 
-    stashed = _LABEL_RE.sub(_stash, synthesis_text)
+    def _stash_math(m: _re.Match) -> str:
+        key = f"\x00PH{len(placeholders)}\x00"
+        placeholders[key] = m.group(0)   # restore verbatim for MathJax
+        return key
+
+    stashed = _LABEL_RE.sub(_stash_label, synthesis_text)
+    stashed = _MATH_RE.sub(_stash_math, stashed)
+
     md_html = _md_lib.markdown(stashed, extensions=["tables", "fenced_code"])
+
     for key, val in placeholders.items():
         md_html = md_html.replace(_html.escape(key), val).replace(key, val)
 
     full_html = (
-        f"<!DOCTYPE html><html><head>{_SYNTHESIS_CSS}</head>"
+        f"<!DOCTYPE html><html><head>{_MATHJAX_SCRIPT}{_SYNTHESIS_CSS}</head>"
         f"<body>{md_html}{_POPUP_HOVER_JS}</body></html>"
     )
     est_lines  = synthesis_text.count("\n") + 1
