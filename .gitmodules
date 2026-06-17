@@ -1,3 +1,6 @@
 [submodule "argora-public"]
 	path = argora-public
 	url = https://github.com/iJinjin/argora-public
+[submodule "argumentative-llms"]
+	path = argumentative-llms
+	url = https://github.com/CLArg-group/argumentative-llms.git
