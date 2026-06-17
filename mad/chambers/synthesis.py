@@ -6,6 +6,8 @@ log = logging.getLogger(__name__)
 
 
 def run_synthesis(query: str, agents, mediator, status_cb=None) -> dict:
+    from orchestration import format_context
+
     def _status(msg: str):
         log.info(msg)
         if status_cb:
@@ -17,19 +19,23 @@ def run_synthesis(query: str, agents, mediator, status_cb=None) -> dict:
     for agent in agents:
         _status(f"  [{agent.name}] generating hypothesis…")
         hyp, triples = agent.initial_hypothesis(query)
+        _status(f"  [{agent.name}] building argument QBAF (Γ+ε)…")
+        local_qbaf = agent.build_local_arguments(query, hyp, format_context(triples))
         _status(f"  [{agent.name}] extracting references…")
         refs = agent.get_references(triples)
         agent_hypotheses[agent.name] = {
             "statement":  hyp,
             "triples":    triples,
             "references": refs,
+            "local_qbaf": local_qbaf,
         }
         _status(f"  [{agent.name}] done ({len(triples)} triples used)")
 
-    _status("  Mediator building argumentation graph and synthesizing…")
+    _status("  Mediator merging QBAFs and synthesizing…")
     synthesis_result = mediator.synthesize(
         query,
-        {name: d["statement"] for name, d in agent_hypotheses.items()},
+        {name: {"statement": d["statement"], "local_qbaf": d["local_qbaf"]}
+         for name, d in agent_hypotheses.items()},
     )
 
     return {

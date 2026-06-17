@@ -65,7 +65,6 @@ from agents.neuromorphic import NeuromorphicHypothesis, ROLE as NEURO_M_ROLE, LA
 
 from argora.graph_builder import RoundGraph                          # noqa: E402
 from argora.qsem import compute_strengths_single_pass                # noqa: E402
-from argora.similarity_check import Similarity, calculate_co_pruning # noqa: E402
 
 from chambers.synthesis     import run_synthesis      # noqa: E402
 from chambers.adversarial   import run_adversarial    # noqa: E402
@@ -125,6 +124,42 @@ class ExpertOutputParser(dspy.Signature):
     supporting_arguments: str = dspy.OutputField(
         desc="Semicolon-separated supporting sub-claims or evidence that STRENGTHEN this expert's main claim; "
              "empty string if none. Do NOT include attacks on other experts here."
+    )
+
+
+class AgentArgumentMiner(dspy.Signature):
+    """You are a domain specialist generating a single argument about your main hypothesis claim.
+    Ground your argument specifically in the knowledge base context provided.
+    Generate one concise argument (1-2 sentences) that either supports or attacks the main claim
+    from your specialist domain perspective. Only generate an argument if you have a valid,
+    domain-grounded one — otherwise return exactly 'N/A'."""
+
+    query: str         = dspy.InputField(desc="The research query being addressed")
+    agent_role: str    = dspy.InputField(desc="Your specialist domain role and expertise")
+    graph_context: str = dspy.InputField(desc="Knowledge graph triples from your domain — ground your argument in these")
+    main_claim: str    = dspy.InputField(desc="Your main hypothesis claim to argue about")
+    polarity: str      = dspy.InputField(
+        desc="'supporting' — generate an argument that strengthens the claim, "
+             "or 'attacking' — generate one that challenges it"
+    )
+    argument: str = dspy.OutputField(
+        desc="A single concise domain-grounded argument (1-2 sentences), or exactly 'N/A' if none can be made"
+    )
+
+
+class ArgumentStrengthAttributor(dspy.Signature):
+    """You are a domain expert assessing the quality of a single argument.
+    Score how compelling and well-grounded this argument is as evidence for or against its parent claim.
+    Base your score on factuality, domain accuracy, logical coherence, and relevance to the parent claim."""
+
+    agent_role: str   = dspy.InputField(desc="Your specialist domain role")
+    argument: str     = dspy.InputField(desc="The argument to evaluate")
+    parent_claim: str = dspy.InputField(desc="The claim this argument supports or attacks")
+    polarity: str     = dspy.InputField(desc="'supporting' or 'attacking'")
+    confidence: str   = dspy.OutputField(
+        desc="An integer from 0 to 100: your confidence that this argument is valid and compelling. "
+             "0 = definitely invalid or irrelevant, 100 = definitely valid and strongly compelling. "
+             "Reply with the number only."
     )
 
 
@@ -315,9 +350,12 @@ class SpecialistAgent(dspy.Module):
         self.metadata         = metadata or {}
         self.graph            = load_graph(kg_path)
         self.entity_extractor = EntityExtractor()
-        self.hyp_predict       = dspy.Predict(_HYPOTHESIS_SIGS[name])
-        self.debate_predict    = dspy.Predict(DebateResponse)
-        self.agreement_predict = dspy.Predict(ChoreographedAgreementResponse)
+        self.hyp_predict        = dspy.Predict(_HYPOTHESIS_SIGS[name])
+        self.debate_predict     = dspy.Predict(DebateResponse)
+        self.agreement_predict  = dspy.Predict(ChoreographedAgreementResponse)
+        self.parse_predict      = dspy.Predict(ExpertOutputParser)
+        self.arg_miner_predict  = dspy.Predict(AgentArgumentMiner)
+        self.strength_attr_predict = dspy.Predict(ArgumentStrengthAttributor)
 
     def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
         """Returns (hypothesis_text, triples)."""
@@ -344,6 +382,47 @@ class SpecialistAgent(dspy.Module):
                 refs.append(format_apa(paper))
         return "\n".join(refs)
 
+    def build_local_arguments(self, query: str, hypothesis: str, graph_context: str) -> dict:
+        """ArgLLMs Γ+ε per-agent QBAF construction.
+
+        Extracts the agent's main claim, then generates one KG-grounded supporting
+        argument and one attacking argument (Γ), scoring each with a domain-calibrated
+        confidence (ε → base score τ).  Returns a dict that the Mediator merges into
+        the shared RoundGraph.
+        """
+        parsed     = self.parse_predict(query=query, expert_name=self.name, hypothesis=hypothesis)
+        main_claim = parsed.main_argument.strip()
+
+        arguments: list[dict] = []
+        for polarity in ("supporting", "attacking"):
+            try:
+                gen = self.arg_miner_predict(
+                    query=query,
+                    agent_role=self.role,
+                    graph_context=graph_context,
+                    main_claim=main_claim,
+                    polarity=polarity,
+                )
+                arg_text = gen.argument.strip()
+                if not arg_text or arg_text.lower() == "n/a":
+                    continue
+                score = self.strength_attr_predict(
+                    agent_role=self.role,
+                    argument=arg_text,
+                    parent_claim=main_claim,
+                    polarity=polarity,
+                )
+                raw = score.confidence.strip().rstrip("%").strip()
+                try:
+                    strength = min(1.0, max(0.0, float(raw) / 100.0))
+                except ValueError:
+                    strength = 0.5
+                arguments.append({"text": arg_text, "polarity": polarity, "strength": strength})
+            except Exception:
+                continue
+
+        return {"main_claim": main_claim, "arguments": arguments}
+
     def debate_response(self, query: str, debate_history: str, debate_level: str) -> tuple[str, bool]:
         """Returns (response_text, agreed)."""
         result = self.debate_predict(
@@ -367,78 +446,53 @@ class SpecialistAgent(dspy.Module):
         return result.response.strip(), agreed
 
 
-_CO_PRUNING_LAMBDA = 0.82   # cosine similarity threshold for contextual orthogonality
-
-
 class Mediator(dspy.Module):
     def __init__(self):
         super().__init__()
         self.discriminative_predict  = dspy.Predict(MediatorJudgeDiscriminative)
         self.extractive_predict      = dspy.Predict(MediatorJudgeExtractive)
         self.followup_predict        = dspy.Predict(FollowUpAnswer)
-        self.parse_predict           = dspy.Predict(ExpertOutputParser)
         self.peer_elicit_predict     = dspy.Predict(PeerArgumentElicitor)
         self.graph_synthesis_predict = dspy.Predict(MediatorGraphSynthesis)
         self.graph_extract_predict   = dspy.Predict(MediatorGraphExtractAnswer)
-        self._similarity: Similarity | None = None
 
-    def _get_similarity(self) -> Similarity:
-        if self._similarity is None:
-            self._similarity = Similarity()
-        return self._similarity
+    def build_argument_graph(self, query: str, agent_data: dict[str, dict]) -> RoundGraph:
+        """Build a RoundGraph using the ArgLLMs Design B + ARGORA methodology:
 
-    def _parse_agent_output(self, query: str, agent_name: str, hypothesis: str) -> dict:
-        """Parse a hypothesis into {main_argument, supporting_arguments}."""
-        result = self.parse_predict(
-            query=query,
-            expert_name=agent_name,
-            hypothesis=hypothesis,
-        )
-        def _split(s: str) -> list[str]:
-            return [x.strip() for x in s.split(";") if x.strip()]
-        return {
-            "main_argument":        result.main_argument.strip(),
-            "supporting_arguments": _split(result.supporting_arguments),
-        }
+        - Phase 1: add each agent's main claim from its per-agent local QBAF
+        - Phase 2: per main claim, add Γ+ε local arguments (with ε base scores)
+          and cross-agent peer reactions (MArgE-style meshing)
 
-    def build_argument_graph(self, query: str, hypotheses: dict[str, str]) -> RoundGraph:
-        """Build a RoundGraph using the ARGORA methodology:
-        - Phase 1: each agent's main claim + their own supporting sub-arguments
-        - Phase 2: every peer agent evaluates each main claim (agree/disagree)
-        - Contextual orthogonality pruning filters near-duplicate arguments
+        agent_data[agent_name] = {"statement": str, "local_qbaf": dict}
+        local_qbaf = {"main_claim": str, "arguments": [{"text", "polarity", "strength"}]}
         """
         graph = RoundGraph(topic=query, round=0)
 
-        # ── Phase 1: add all main claims + author supporting arguments ───────
-        parsed_by_agent: dict[str, dict] = {}
+        # ── Phase 1: register all main claims ───────────────────────────────
         main_ids: dict[str, int] = {}
-        for agent_name, hypothesis in hypotheses.items():
-            parsed = self._parse_agent_output(query, agent_name, hypothesis)
-            main_id = graph.add_main(agent_name, parsed["main_argument"])
-            main_ids[agent_name] = main_id
-            parsed_by_agent[agent_name] = parsed
+        local_qbafs: dict[str, dict] = {}
+        for agent_name, data in agent_data.items():
+            lq      = data["local_qbaf"]
+            main_id = graph.add_main(agent_name, lq["main_claim"])
+            main_ids[agent_name]    = main_id
+            local_qbafs[agent_name] = lq
 
-        # All main claim texts — used as "parent context" for pruning
-        main_stmts = [p["main_argument"] for p in parsed_by_agent.values()]
-        sim = self._get_similarity()
-
-        # ── Phase 2: per main claim, collect author supports + peer reactions ─
-        for target_agent, target_parsed in parsed_by_agent.items():
+        # ── Phase 2: per main claim, add local args + peer reactions ────────
+        for target_agent, lq in local_qbafs.items():
             main_id   = main_ids[target_agent]
-            main_stmt = target_parsed["main_argument"]
+            main_stmt = lq["main_claim"]
 
-            candidates: list[dict] = []
+            # Γ+ε local arguments — KG-grounded with domain-calibrated base scores
+            for arg in lq["arguments"]:
+                b       = arg["strength"]
+                polarity = "support" if arg["polarity"] == "supporting" else "attack"
+                if polarity == "support":
+                    graph.add_support_to(target_agent, arg["text"], main_id, base=b)
+                else:
+                    graph.add_attack_to(target_agent, arg["text"], main_id, base=b)
 
-            # Author's own supporting sub-arguments
-            for sup in target_parsed["supporting_arguments"]:
-                candidates.append({
-                    "expert":   target_agent,
-                    "statement": sup,
-                    "polarity":  "support",
-                })
-
-            # Peer reactions: every other agent evaluates this main claim
-            for peer_agent in parsed_by_agent:
+            # Cross-agent peer reactions (MArgE-style meshing) — neutral base score
+            for peer_agent, peer_data in agent_data.items():
                 if peer_agent == target_agent:
                     continue
                 try:
@@ -447,7 +501,7 @@ class Mediator(dspy.Module):
                         author_name=target_agent,
                         main_argument=main_stmt,
                         peer_name=peer_agent,
-                        peer_hypothesis=hypotheses[peer_agent],
+                        peer_hypothesis=peer_data["statement"],
                     )
                     stance    = result.stance.strip().lower()
                     reasoning = result.reasoning.strip()
@@ -455,28 +509,10 @@ class Mediator(dspy.Module):
                     continue
                 if not reasoning:
                     continue
-                polarity = "support" if stance.startswith("agree") else "attack"
-                candidates.append({
-                    "expert":    peer_agent,
-                    "statement": reasoning,
-                    "polarity":  polarity,
-                })
-
-            # Contextual orthogonality pruning
-            selected = calculate_co_pruning(
-                main_stmt,
-                candidates,
-                parent_statements=main_stmts,
-                tree_level=1,
-                co_pruning_lambda=_CO_PRUNING_LAMBDA,
-                similarity_model=sim,
-            )
-
-            for cand in selected:
-                if cand["polarity"] == "support":
-                    graph.add_support_to(cand["expert"], cand["statement"], main_id)
+                if stance.startswith("agree"):
+                    graph.add_support_to(peer_agent, reasoning, main_id, base=0.5)
                 else:
-                    graph.add_attack_to(cand["expert"], cand["statement"], main_id)
+                    graph.add_attack_to(peer_agent, reasoning, main_id, base=0.5)
 
         return graph
 
@@ -527,12 +563,14 @@ class Mediator(dspy.Module):
             )
         return gd
 
-    def synthesize(self, query: str, hypotheses: dict[str, str]) -> dict:
-        """Build an argumentation graph, compute DFQuAD strengths, then synthesize.
+    def synthesize(self, query: str, agent_data: dict[str, dict]) -> dict:
+        """Build an argumentation graph from per-agent ArgLLMs QBAFs, compute
+        DFQuAD strengths, then synthesize.
 
+        agent_data[name] = {"statement": str, "local_qbaf": dict}
         Returns {"text": str, "graph": dict}.
         """
-        graph     = self.build_argument_graph(query, hypotheses)
+        graph     = self.build_argument_graph(query, agent_data)
         strengths = compute_strengths_single_pass(graph, semantics="DFQuADModel")
         result    = self.graph_synthesis_predict(
             query=query,
@@ -553,14 +591,15 @@ class Mediator(dspy.Module):
         query: str,
         debate_history: str,
         *,
-        agent_hypotheses: dict[str, str] | None = None,
+        agent_data: dict[str, dict] | None = None,
     ) -> dict:
-        """Extract a final answer, optionally using a graph of agents' final positions.
+        """Extract a final answer, optionally using per-agent ArgLLMs QBAFs.
 
+        agent_data[name] = {"statement": str, "local_qbaf": dict}
         Returns {"text": str, "graph": dict | None}.
         """
-        if agent_hypotheses:
-            graph     = self.build_argument_graph(query, agent_hypotheses)
+        if agent_data:
+            graph     = self.build_argument_graph(query, agent_data)
             strengths = compute_strengths_single_pass(graph, semantics="DFQuADModel")
             result    = self.graph_extract_predict(
                 query=query,

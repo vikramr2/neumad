@@ -47,6 +47,8 @@ def format_choreographed_history(history: list[dict]) -> str:
 
 
 def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
+    from orchestration import format_context
+
     def _status(msg: str):
         log.info(msg)
         if status_cb:
@@ -55,12 +57,15 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
     _status(f"Query (choreographed): {query}")
     history: list[dict] = []
     agent_refs: dict[str, str] = {}
+    agent_local_qbafs: dict[str, dict] = {}
 
-    # ── Round 1: Establish opinion (covariance: moderate) ──────────────────
+    # ── Round 1: Establish opinion + build Γ+ε QBAFs (covariance: moderate) ─
     _status("  Round 1 — establishing positions…")
     for agent in agents:
         _status(f"  [{agent.name}] round 1 — generating hypothesis…")
         hyp, triples = agent.initial_hypothesis(query)
+        _status(f"  [{agent.name}] round 1 — building argument QBAF (Γ+ε)…")
+        agent_local_qbafs[agent.name] = agent.build_local_arguments(query, hyp, format_context(triples))
         refs = agent.get_references(triples)
         agent_refs[agent.name] = refs
         history.append({
@@ -109,18 +114,21 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
             "agreed":     agreed,
         })
 
-    # ── Round 4: Mediator synthesis (covariance: none) ────────────────────
+    # ── Round 4: Mediator synthesis using round-1 KG-grounded QBAFs ──────
     _status("  Round 4 — mediator synthesizing…")
-    # Build graph from round-3 convergence statements (agents' most refined positions)
     round3_stmts = {
         e["agent"]: e["statement"]
         for e in history
         if e["round"] == 3 and e["agent"] != "mediator"
     }
+    agent_data = {
+        name: {"statement": stmt, "local_qbaf": agent_local_qbafs[name]}
+        for name, stmt in round3_stmts.items()
+    }
     synthesis_result = mediator.extract_answer(
         query,
         format_choreographed_history(history),
-        agent_hypotheses=round3_stmts,
+        agent_data=agent_data,
     )
     synthesis = synthesis_result["text"]
     history.append({

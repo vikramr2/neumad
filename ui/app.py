@@ -511,22 +511,23 @@ def _render_argumentation_graph(graph_dict: dict) -> None:
         ns_l.append(18 if ntype == "main_argument" else 11)
 
         # Hover card
-        stmt     = node.get("statement", "")
-        strength = node.get("qsem_strength")
-        type_lbl = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
+        stmt      = node.get("statement", "")
+        base_tau  = node.get("base")
+        sigma     = node.get("qsem_strength")
+        type_lbl  = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
         agent_lbl = _AGENT_LABELS.get(exp, exp)
 
-        if strength is not None:
-            filled = round(strength * 10)
-            bar    = "▓" * filled + "░" * (10 - filled)
-            s_clr  = "#10b981" if strength >= 0.6 else ("#f59e0b" if strength >= 0.4 else "#ef4444")
-            s_line = f"<br><b>Strength</b>: {bar} {strength:.2f}"
-        else:
-            s_line = ""
+        score_lines = ""
+        if base_tau is not None:
+            fe = round(base_tau * 10)
+            score_lines += f"<br><b>ε</b>: {'▓'*fe}{'░'*(10-fe)} {base_tau:.2f}"
+        if sigma is not None:
+            fs = round(sigma * 10)
+            score_lines += f"<br><b>σ</b>: {'▓'*fs}{'░'*(10-fs)} {sigma:.2f}"
 
         nh_l.append(
             f"<b>{agent_lbl}</b>  ·  <i>{type_lbl}</i>"
-            f"{s_line}"
+            f"{score_lines}"
             f"<br><br>{_hover_wrap(stmt)}"
         )
 
@@ -743,7 +744,7 @@ _SYNTHESIS_CSS = """<style>
     font-size: 0.68em;
     color: #64748b;
     white-space: nowrap;
-    min-width: 110px;
+    min-width: 90px;
   }
   .strength-bar-bg {
     flex: 1;
@@ -786,14 +787,14 @@ _POPUP_HOVER_JS = """<script>
 </script>"""
 
 
-def _strength_bar_html(strength: float | None) -> str:
+def _strength_bar_html(label: str, strength: float | None) -> str:
     if strength is None:
         return ""
     pct   = int(strength * 100)
     color = "#10b981" if strength >= 0.6 else ("#f59e0b" if strength >= 0.4 else "#ef4444")
     return (
         f'<div class="strength-row">'
-        f'<span class="strength-label">Dialectical strength</span>'
+        f'<span class="strength-label">{label}</span>'
         f'<div class="strength-bar-bg">'
         f'<div class="strength-bar-fill" style="width:{pct}%;background:{color}"></div>'
         f'</div>'
@@ -808,14 +809,16 @@ def _node_popup_card(node: dict) -> str:
     stmt     = _html.escape(node.get("statement", ""))
     color    = _EXPERT_HEX.get(expert, "#6b7280")
     label    = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
-    strength = node.get("qsem_strength")
+    base     = node.get("base")
+    sigma    = node.get("qsem_strength")
     return (
         f'<div class="node-card" style="border-left-color:{color}">'
         f'<div class="node-card-header">'
         f'<span class="expert-badge" style="background:{color}">{_html.escape(expert)}</span>'
         f'<span class="node-type-badge">{_html.escape(label)}</span>'
         f'</div>'
-        f'{_strength_bar_html(strength)}'
+        f'{_strength_bar_html("ε intrinsic", base)}'
+        f'{_strength_bar_html("σ dialectical", sigma)}'
         f'<p class="node-statement">{stmt}</p>'
         f'</div>'
     )

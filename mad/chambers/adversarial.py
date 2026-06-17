@@ -13,7 +13,7 @@ def run_adversarial(
     debate_level: int,
     status_cb=None,
 ) -> dict:
-    from orchestration import format_debate_history, DEBATE_LEVEL_PROMPTS
+    from orchestration import format_debate_history, DEBATE_LEVEL_PROMPTS, format_context
 
     def _status(msg: str):
         log.info(msg)
@@ -24,11 +24,14 @@ def run_adversarial(
     level_prompt = DEBATE_LEVEL_PROMPTS[debate_level]
     history: list[dict] = []
 
-    # Round 0 — initial KG-grounded positions + per-agent references
+    # Round 0 — initial KG-grounded positions + per-agent Γ+ε QBAFs
     agent_refs: dict[str, str] = {}
+    agent_local_qbafs: dict[str, dict] = {}
     for agent in agents:
         _status(f"  [{agent.name}] round 0 — generating hypothesis…")
         hyp, triples = agent.initial_hypothesis(query)
+        _status(f"  [{agent.name}] round 0 — building argument QBAF (Γ+ε)…")
+        agent_local_qbafs[agent.name] = agent.build_local_arguments(query, hyp, format_context(triples))
         _status(f"  [{agent.name}] round 0 — extracting references…")
         refs = agent.get_references(triples)
         agent_refs[agent.name] = refs
@@ -69,18 +72,22 @@ def run_adversarial(
             _status("  Adaptive break: debate concluded early")
             break
 
-    # Build graph from the final debate round (agents' last refined positions)
+    # Build graph from the final debate round using round-0 KG-grounded QBAFs
     final_round = max(e["round"] for e in history)
     final_agent_stmts = {
         e["agent"]: e["statement"]
         for e in history
         if e["round"] == final_round and e["agent"] != "mediator"
     }
+    agent_data = {
+        name: {"statement": stmt, "local_qbaf": agent_local_qbafs[name]}
+        for name, stmt in final_agent_stmts.items()
+    }
     _status("  Mediator extracting final answer…")
     answer_result = mediator.extract_answer(
         query,
         format_debate_history(history),
-        agent_hypotheses=final_agent_stmts,
+        agent_data=agent_data,
     )
 
     return {
