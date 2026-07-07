@@ -295,6 +295,6 @@ Peer reactions (τ = 0.5) have weaker absolute influence than high-ε domain arg
 
 ## References
 
-- Liang et al. (2023). *Improving Factuality and Reasoning in Language Models through Multiagent Debate.* arXiv:2305.14325 — MAD protocol, tit-for-tat levels
-- Çelik et al. (2025). *Argumentative LLMs.* AAAI 2025 — Γ/ε/Σ pipeline, MArgE
+- Liang et al. (2023). *Encouraging Divergent Thinking in Large Language Models through Multi-Agent Debate* arXiv:2305.14325 — MAD protocol, tit-for-tat levels
+- Çelik et al. (2025). *Argumentative Large Language Models for Explainable and Contestable Claim Verification* AAAI 2025 — Γ/ε/Σ pipeline, MArgE
 - Kampik, Çyras, Ruiz Alarcón (2024). *Gradual Semantics for Weighted Bipolar Argumentation Frameworks.* IJAR — DFQuAD, aggregation-influence framework
