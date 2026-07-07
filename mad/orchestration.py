@@ -67,6 +67,7 @@ from agents.mediator     import Mediator
 
 from chambers.synthesis     import run_synthesis      # noqa: E402
 from chambers.adversarial   import run_adversarial    # noqa: E402
+from chambers.rotation      import run_rotation       # noqa: E402
 from chambers.choreographed import (                  # noqa: E402
     CHOREOGRAPHED_ROUND_LABELS,
     CHOREOGRAPHED_COVARIANCE,
@@ -279,13 +280,18 @@ def main():
     env = load_env(ENV_PATH)
 
     mode = env["NEUKRAG_MODE"].lower()
-    if mode not in ("synthesis", "adversarial", "choreographed", "neukrag", "neukrag-inter"):
-        sys.exit(f"ERROR: NEUKRAG_MODE must be 'synthesis', 'adversarial', 'choreographed', 'neukrag', or 'neukrag-inter', got '{mode}'")
+    valid_modes = ("synthesis", "adversarial", "choreographed", "rotation", "neukrag", "neukrag-inter")
+    if mode not in valid_modes:
+        sys.exit(f"ERROR: NEUKRAG_MODE must be one of {valid_modes}, got '{mode}'")
 
     max_rounds   = int(env["NEUKRAG_DEBATE_ROUNDS"])
     debate_level = int(env["NEUKRAG_DEBATE_LEVEL"])
     if debate_level not in DEBATE_LEVEL_PROMPTS:
         sys.exit(f"ERROR: NEUKRAG_DEBATE_LEVEL must be 0-3, got {debate_level}")
+
+    n_rotations = int(env["NEUKRAG_ROTATIONS"])
+    if n_rotations < 1:
+        sys.exit(f"ERROR: NEUKRAG_ROTATIONS must be >= 1, got {n_rotations}")
 
     cfg      = load_toml(CONFIG_PATH)
     kg_cfg   = cfg.get("kg_paths", {})
@@ -315,7 +321,8 @@ def main():
     dspy.configure(lm=lm)
     log.info(f"DSPy configured with {LLM_MODEL} @ {OLLAMA_BASE_URL}")
     log.info(f"Mode: {mode}" + (
-        f"  (debate_level={debate_level}, max_rounds={max_rounds})" if mode == "adversarial" else ""
+        f"  (debate_level={debate_level}, max_rounds={max_rounds})" if mode == "adversarial" else
+        f"  (n_rotations={n_rotations})" if mode == "rotation" else ""
     ))
 
     queries = [args.query] if args.query else DEFAULT_QUERIES
@@ -359,6 +366,8 @@ def main():
                 result = run_synthesis(query, agents, mediator)
             elif mode == "adversarial":
                 result = run_adversarial(query, agents, mediator, max_rounds, debate_level)
+            elif mode == "rotation":
+                result = run_rotation(query, agents, mediator, n_rotations=n_rotations)
             else:
                 result = run_choreographed(query, agents, mediator)
 
@@ -368,6 +377,8 @@ def main():
             print(f"MODE:   {result['mode'].upper()}", end="")
             if mode == "adversarial":
                 print(f"  (level={result['debate_level']}, rounds={result['rounds_completed']})", end="")
+            elif mode == "rotation":
+                print(f"  (rotations={result['n_rotations']})", end="")
             print(f"\n{'='*70}")
             print(result["final_hypothesis"])
 

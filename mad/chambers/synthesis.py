@@ -38,10 +38,15 @@ def run_synthesis(query: str, agents, mediator, status_cb=None) -> dict:
          for name, d in agent_hypotheses.items()},
     )
 
+    _status("  Mediator attributing synthesis provenance…")
+    agent_claims = {name: d["local_qbaf"]["main_claim"] for name, d in agent_hypotheses.items()}
+    provenance = mediator.classify_synthesis_provenance(query, synthesis_result["text"], agent_claims)
+
     return {
         "query":                query,
         "mode":                 "synthesis",
         "agent_hypotheses":     agent_hypotheses,
+        "provenance":           provenance,
         "final_hypothesis":    synthesis_result["text"],
         "argumentation_graph": synthesis_result["graph"],
     }

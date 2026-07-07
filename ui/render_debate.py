@@ -76,6 +76,36 @@ def _transition_summary(entries: list[dict]) -> str:
     return f" · {', '.join(parts)}" if parts else ""
 
 
+def _render_rotation_sequence(history: list[dict], n_rotations: int):
+    """Render rotation-mode history as a sequential pipeline: one agent edit per round,
+    in order, rather than per-round columns (only one agent acts per round here)."""
+    entries = sorted(history, key=lambda e: e["round"])
+    agent_names = list(dict.fromkeys(e["agent"] for e in entries))  # first-seen order
+    _render_position_trajectory(history, agent_names)
+    st.divider()
+
+    st.markdown(f"**{n_rotations} rotation(s)** — position passed in sequence, edited by each agent in turn")
+    for i, entry in enumerate(entries):
+        name  = entry["agent"]
+        label = _AGENT_LABELS.get(name, name)
+        color = _AGENT_COLORS.get(name, "#666666")
+        badge = _transition_badge(entry)
+        step_label = "Initial position" if entry["round"] == 0 else f"Round {entry['round']}"
+        st.markdown(
+            f"**{step_label}** — <span style='color:{color};font-weight:700'>{label}{badge}</span>",
+            unsafe_allow_html=True,
+        )
+        st.write(entry["statement"])
+        refs = entry.get("references", "").strip()
+        if refs:
+            with st.expander("References", expanded=False):
+                for line in refs.splitlines():
+                    if line.strip():
+                        st.markdown(f"- {line.strip()}")
+        if i < len(entries) - 1:
+            st.divider()
+
+
 def _render_agent_columns(entries: list[dict], *, show_agreement: bool):
     cols = st.columns(3)
     for col, entry in zip(cols, entries):

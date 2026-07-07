@@ -12,6 +12,7 @@ from render_debate import (
     _AGENT_COLORS,
     _render_agent_columns,
     _render_position_trajectory,
+    _render_rotation_sequence,
     _transition_summary,
 )
 from render_graph import _LABEL_RE, _render_argumentation_graph, _render_synthesis_with_labels
@@ -32,6 +33,12 @@ def render_result_in_chat(result: dict):
     # Expandable detail section
     mode = result["mode"]
     if mode == "synthesis":
+        provenance = result.get("provenance")
+        if provenance == "blended":
+            st.caption("🔗 Provenance: a genuine blend — no single agent's position dominates")
+        elif provenance:
+            st.caption(f"🔗 Provenance: primarily reflects **{_AGENT_LABELS.get(provenance, provenance)}**")
+
         with st.expander("Agent hypotheses", expanded=False):
             cols = st.columns(3)
             for col, name in zip(cols, ["neuroscience", "aiml", "neuromorphic"]):
@@ -97,6 +104,11 @@ def render_result_in_chat(result: dict):
 
                 if round_num < max(c_rounds):
                     st.divider()
+
+    elif mode == "rotation":
+        label = f"Rotation detail — {result['n_rotations']} rotation(s)"
+        with st.expander(label, expanded=False):
+            _render_rotation_sequence(result["debate_history"], result["n_rotations"])
 
     elif mode in ("neukrag", "neukrag-inter"):
         triples = result.get("triples", [])

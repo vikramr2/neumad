@@ -38,6 +38,7 @@ from orchestration import (   # noqa: E402
     run_choreographed,
     run_followup,
     run_neukrag_single,
+    run_rotation,
     run_synthesis,
 )
 
@@ -63,6 +64,7 @@ settings      = render_sidebar()
 mode          = settings["mode"]
 debate_rounds = settings["debate_rounds"]
 debate_level  = settings["debate_level"]
+n_rotations   = settings["n_rotations"]
 k_hops        = settings["k_hops"]
 max_triples   = settings["max_triples"]
 
@@ -143,6 +145,7 @@ if prompt := st.chat_input(placeholder):
                 "synthesis":     "Running synthesis…",
                 "adversarial":   "Running adversarial debate…",
                 "choreographed": "Running choreographed debate…",
+                "rotation":      "Running rotation synthesis…",
                 "neukrag":       "Running NeuKRAG…",
                 "neukrag-inter": "Running NeuKRAG-inter…",
             }.get(mode, "Running…")
@@ -158,6 +161,12 @@ if prompt := st.chat_input(placeholder):
                     )
                 elif mode == "choreographed":
                     result = run_choreographed(prompt, agents, mediator, status_cb=on_status)
+                elif mode == "rotation":
+                    result = run_rotation(
+                        prompt, agents, mediator,
+                        n_rotations=n_rotations,
+                        status_cb=on_status,
+                    )
                 else:
                     result = run_neukrag_single(
                         prompt, neukrag_graph, neukrag_meta,

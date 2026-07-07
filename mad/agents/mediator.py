@@ -159,6 +159,21 @@ class PositionMatch(dspy.Signature):
     )
 
 
+class SynthesisProvenance(dspy.Signature):
+    """You are a neutral moderator assessing whose position a synthesized answer draws from.
+    Read the synthesis and compare its core claim against each specialist's original claim.
+    Determine whether the synthesis's substance primarily reflects one specialist's position,
+    or is a genuine blend that doesn't reduce to any single one."""
+
+    query:        str = dspy.InputField(desc="Original research query")
+    synthesis:    str = dspy.InputField(desc="The mediator's full synthesized answer")
+    agent_claims: str = dspy.InputField(desc="JSON object mapping agent name to their original main claim")
+    match: str = dspy.OutputField(
+        desc="Exactly one of: the exact agent name from agent_claims whose position the synthesis "
+             "primarily reflects, or 'blended' if it's a genuine mix that doesn't reduce to any single agent"
+    )
+
+
 # TODO: Make the follow-up answers multi-agent too
 class FollowUpAnswer(dspy.Signature):
     """You are a neuromorphic computing expert answering a follow-up question about a
@@ -186,6 +201,7 @@ class Mediator(dspy.Module):
         self.graph_synthesis_predict = dspy.Predict(MediatorGraphSynthesis)
         self.graph_extract_predict   = dspy.Predict(MediatorGraphExtractAnswer)
         self.position_match_predict  = dspy.Predict(PositionMatch)
+        self.synthesis_provenance_predict = dspy.Predict(SynthesisProvenance)
 
     def build_argument_graph(self, query: str, agent_data: dict[str, dict]) -> RoundGraph:
         """Build a RoundGraph using the ArgLLMs Design B + ARGORA methodology:
@@ -274,6 +290,29 @@ class Mediator(dspy.Module):
             if match.lower() == name.lower():
                 return name
         return "novel"
+
+    def classify_synthesis_provenance(
+        self,
+        query: str,
+        synthesis: str,
+        agent_claims: dict[str, str],
+    ) -> str:
+        """Classify whose position a synthesis primarily reflects.
+
+        Returns an agent name from agent_claims, or 'blended' if it's a genuine mix.
+        """
+        result = self.synthesis_provenance_predict(
+            query=query,
+            synthesis=synthesis,
+            agent_claims=json.dumps(agent_claims, ensure_ascii=False),
+        )
+        match = result.match.strip()
+        if match == "blended" or match in agent_claims:
+            return match
+        for name in agent_claims:
+            if match.lower() == name.lower():
+                return name
+        return "blended"
 
     @staticmethod
     def _build_labeled_graph_json(graph: RoundGraph, strengths: dict[int, float]) -> str:

@@ -24,7 +24,7 @@ _TOP_MODE_HELP = (
 # Sub-modes offered under each top-level mode, in display order.
 _SUB_MODES = {
     "debate":    ["adversarial", "choreographed"],
-    "synthesis": ["synthesis"],
+    "synthesis": ["synthesis", "rotation"],
     "neukrag":   ["neukrag", "neukrag-inter"],
 }
 
@@ -32,19 +32,27 @@ _SUB_MODE_LABELS = {
     "adversarial":   "⚔️ Adversarial",
     "choreographed": "🎼 Choreographed",
     "synthesis":     "🤝 Synthesis",
+    "rotation":      "🔄 Rotation",
     "neukrag":       "🔬 NeuKRAG",
     "neukrag-inter": "🌐 NeuKRAG-inter",
 }
 
 _SUB_MODE_SELECT_LABEL = {
-    "debate":  "Debate style",
-    "neukrag": "KG scope",
+    "debate":    "Debate style",
+    "synthesis": "Synthesis style",
+    "neukrag":   "KG scope",
 }
 
 _SUB_MODE_HELP = {
     "debate": (
         "Adversarial: MAD-style debate with rebuttals and an adaptive early stop.\n"
         "Choreographed: fixed 5-round arc — establish → attack → converge → synthesize → review."
+    ),
+    "synthesis": (
+        "Synthesis: agents generate independently, mediator integrates.\n"
+        "Rotation: neuromorphic drafts a position, then aiml and neuroscience revise it in "
+        "turn before it returns to neuromorphic — one rotation. After n rotations, "
+        "neuromorphic's revision is the final answer."
     ),
     "neukrag": (
         "NeuKRAG: single-agent hypothesis from the neuromorphic KG only.\n"
@@ -110,6 +118,15 @@ def render_sidebar() -> dict:
         else:
             debate_rounds, debate_level = 3, 2
 
+        if mode == "rotation":
+            n_rotations = st.slider(
+                "Rotations", 1, 5, 1,
+                help="How many full aiml → neuroscience → neuromorphic cycles before "
+                     "neuromorphic's revision becomes the final answer.",
+            )
+        else:
+            n_rotations = 1
+
         k_hops      = st.slider("K-hops", 1, 3, 2)
         max_triples = st.slider("Max Triples / Agent", 10, 60, 40, step=5)
 
@@ -156,6 +173,7 @@ section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:hover
         "mode":          mode,
         "debate_rounds": debate_rounds,
         "debate_level":  debate_level,
+        "n_rotations":   n_rotations,
         "k_hops":        k_hops,
         "max_triples":   max_triples,
     }

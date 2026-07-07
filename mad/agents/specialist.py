@@ -113,6 +113,32 @@ class DebateResponse(dspy.Signature):
     agreed: str         = dspy.OutputField(desc='Answer "yes" if you broadly agree with the other agents\' positions, "no" if you disagree')
 
 
+class PositionEdit(dspy.Signature):
+    """You are a domain specialist participating in a round-robin refinement of a shared
+    research position. This is a SURGICAL EDIT task, not a rewrite: keep the existing
+    wording verbatim wherever you agree with it, and only change, add, or remove the
+    specific sentences that need it from your domain's perspective. Do not restate the
+    position in your own words, and do not restructure it with your own headers or
+    framing — edit the text you were given in place. Return the full position after
+    your edits, with unchanged parts reproduced verbatim, not a summary of your changes.
+    If this is the final rotation, make sure the result reads as a complete, conclusive
+    answer to the original query, but still by editing the existing text rather than
+    replacing it with a fresh write-up."""
+
+    query:            str = dspy.InputField(desc="Original research query")
+    agent_role:       str = dspy.InputField(desc="Your specialist role and expertise")
+    graph_context:    str = dspy.InputField(desc="Knowledge graph triples from your domain — ground your edits in these")
+    current_position: str = dspy.InputField(desc="The current shared position to edit — preserve wording you agree with verbatim")
+    is_final_round:   str = dspy.InputField(
+        desc="'yes' if this is the final rotation and your output is the final answer, "
+             "'no' if it will be passed to another specialist"
+    )
+    revised_position: str = dspy.OutputField(
+        desc="The full position after your edits: parts you didn't change reproduced "
+             "verbatim, plus your additions/corrections. Not a rewrite or summary in your own words."
+    )
+
+
 class ChoreographedAgreementResponse(dspy.Signature):
     """You are a domain specialist reviewing a mediator's synthesis of a multi-agent neuromorphic
     computing debate. Evaluate the synthesis from your specialist perspective.
@@ -201,6 +227,7 @@ class SpecialistAgent(dspy.Module):
         self.parse_predict      = dspy.Predict(ExpertOutputParser)
         self.arg_miner_predict  = dspy.Predict(AgentArgumentMiner)
         self.strength_attr_predict = dspy.Predict(ArgumentStrengthAttributor)
+        self.edit_predict       = dspy.Predict(PositionEdit)
 
     def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
         """Returns (hypothesis_text, triples)."""
@@ -287,6 +314,28 @@ class SpecialistAgent(dspy.Module):
         )
         agreed = result.agreed.strip().lower().startswith("yes")
         return result.response.strip(), agreed
+
+    def edit_position(self, query: str, current_position: str, is_final: bool = False) -> tuple[str, list[dict]]:
+        """Revise a shared position from this agent's domain perspective (rotation mode).
+
+        Returns (revised_text, triples). Re-grounds in this agent's own KG each turn,
+        same retrieval as initial_hypothesis, since the point of passing the position
+        around is for each domain to inject its own evidence.
+        """
+        entities    = self.entity_extractor(query=query)
+        entry_nodes = keyword_entry_points(self.graph, entities)
+        if not entry_nodes:
+            entry_nodes = set(entities)
+        triples = bfs_subgraph(self.graph, entry_nodes, k_hops=self.k_hops, max_triples=self.max_triples)
+        context = format_context(triples)
+        result  = self.edit_predict(
+            query=query,
+            agent_role=self.role,
+            graph_context=context,
+            current_position=current_position,
+            is_final_round="yes" if is_final else "no",
+        )
+        return result.revised_position.strip(), triples
 
     def review_synthesis(self, query: str, synthesis: str, debate_history: str) -> tuple[str, bool]:
         """Returns (response_text, agreed) — used in choreographed round 5."""
