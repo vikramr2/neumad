@@ -138,6 +138,27 @@ class MediatorJudgeExtractive(dspy.Signature):
     )
 
 
+class PositionMatch(dspy.Signature):
+    """You are a neutral moderator tracking how a specialist's position evolves across
+    a multi-agent debate. Compare the specialist's updated claim against a small set of
+    candidate prior positions: their own previous claim, and each peer's previous claim.
+    Judge substantive agreement, not surface wording — a claim can be reworded and still
+    be 'own', or share vocabulary with a peer while still disagreeing with it."""
+
+    query:           str = dspy.InputField(desc="Original research query")
+    agent_name:      str = dspy.InputField(desc="Name of the specialist whose position is being tracked")
+    new_claim:       str = dspy.InputField(desc="The specialist's updated main claim this round")
+    own_prior_claim: str = dspy.InputField(desc="The specialist's own main claim from the previous round")
+    peer_claims:     str = dspy.InputField(
+        desc="JSON object mapping peer agent name to that peer's main claim from the previous round"
+    )
+    match: str = dspy.OutputField(
+        desc="Exactly one of: 'own' (still substantively the same as their own prior claim), "
+             "the exact peer name as given in peer_claims (the claim now substantively matches "
+             "that peer's prior claim), or 'novel' (a genuinely new position matching none of the above)"
+    )
+
+
 # TODO: Make the follow-up answers multi-agent too
 class FollowUpAnswer(dspy.Signature):
     """You are a neuromorphic computing expert answering a follow-up question about a
@@ -164,6 +185,7 @@ class Mediator(dspy.Module):
         self.peer_elicit_predict     = dspy.Predict(PeerArgumentElicitor)
         self.graph_synthesis_predict = dspy.Predict(MediatorGraphSynthesis)
         self.graph_extract_predict   = dspy.Predict(MediatorGraphExtractAnswer)
+        self.position_match_predict  = dspy.Predict(PositionMatch)
 
     def build_argument_graph(self, query: str, agent_data: dict[str, dict]) -> RoundGraph:
         """Build a RoundGraph using the ArgLLMs Design B + ARGORA methodology:
@@ -224,6 +246,34 @@ class Mediator(dspy.Module):
                     graph.add_attack_to(peer_agent, reasoning, main_id, base=0.5)
 
         return graph
+
+    def classify_transition(
+        self,
+        query: str,
+        agent_name: str,
+        new_claim: str,
+        own_prior_claim: str,
+        peer_claims: dict[str, str],
+    ) -> str:
+        """Classify an agent's round-over-round position change.
+
+        Returns 'own' (unchanged), a peer name from peer_claims (position moved to
+        match that peer), or 'novel' (changed but matches no one in particular).
+        """
+        result = self.position_match_predict(
+            query=query,
+            agent_name=agent_name,
+            new_claim=new_claim,
+            own_prior_claim=own_prior_claim,
+            peer_claims=json.dumps(peer_claims, ensure_ascii=False),
+        )
+        match = result.match.strip()
+        if match == "own" or match == "novel" or match in peer_claims:
+            return match
+        for name in peer_claims:
+            if match.lower() == name.lower():
+                return name
+        return "novel"
 
     @staticmethod
     def _build_labeled_graph_json(graph: RoundGraph, strengths: dict[int, float]) -> str:

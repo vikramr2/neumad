@@ -227,6 +227,15 @@ class SpecialistAgent(dspy.Module):
                 refs.append(format_apa(paper))
         return "\n".join(refs)
 
+    def extract_main_claim(self, query: str, statement: str) -> str:
+        """Extract just the single core claim from a statement (reuses ExpertOutputParser).
+
+        Cheaper than build_local_arguments — no argument mining, just the claim
+        extraction — so it's safe to call every round for position tracking.
+        """
+        parsed = self.parse_predict(query=query, expert_name=self.name, hypothesis=statement)
+        return parsed.main_argument.strip()
+
     def build_local_arguments(self, query: str, hypothesis: str, graph_context: str) -> dict:
         """ArgLLMs Γ+ε per-agent QBAF construction.
 

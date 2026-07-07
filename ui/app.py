@@ -363,12 +363,70 @@ def _agreement_badge(agreed: bool | None) -> str:
     return " 🟢" if agreed else " 🔴"
 
 
+def _transition_icon(transition_type: str | None, adopted_peer: str | None) -> str:
+    if transition_type == "unchanged":
+        return "↔"
+    if transition_type == "independent_revision":
+        return "✦"
+    if transition_type == "peer_aligned":
+        short = _AGENT_LABELS.get(adopted_peer, adopted_peer or "?").replace(" Specialist", "")
+        return f"→{short}"
+    return "·"
+
+
+def _transition_badge(entry: dict) -> str:
+    if entry.get("transition_type") is None:
+        return ""
+    return " " + _transition_icon(entry.get("transition_type"), entry.get("adopted_peer"))
+
+
+def _render_position_trajectory(history: list[dict], agent_names: list[str]):
+    """One row per agent showing its transition_type/adopted_peer across rounds."""
+    by_agent: dict[str, dict[int, dict]] = {name: {} for name in agent_names}
+    for entry in history:
+        if entry["agent"] in by_agent and entry.get("transition_type") is not None:
+            by_agent[entry["agent"]][entry["round"]] = entry
+
+    if not any(by_agent.values()):
+        return
+
+    st.markdown("**Position trajectory**")
+    for name in agent_names:
+        rounds = by_agent[name]
+        if not rounds:
+            continue
+        cells = " · ".join(
+            _transition_icon(e.get("transition_type"), e.get("adopted_peer"))
+            for _, e in sorted(rounds.items())
+        )
+        st.markdown(
+            f"<span style='color:{_AGENT_COLORS[name]};font-weight:700'>{_AGENT_LABELS[name]}</span>: {cells}",
+            unsafe_allow_html=True,
+        )
+    st.caption("↔ unchanged · →Name restated that peer's claim · ✦ independent revision")
+
+
+def _transition_summary(entries: list[dict]) -> str:
+    counted = [e.get("transition_type") for e in entries if e.get("transition_type")]
+    if not counted:
+        return ""
+    peer_aligned = counted.count("peer_aligned")
+    independent  = counted.count("independent_revision")
+    parts = []
+    if peer_aligned:
+        parts.append(f"{peer_aligned} peer-aligned")
+    if independent:
+        parts.append(f"{independent} independent")
+    return f" · {', '.join(parts)}" if parts else ""
+
+
 def _render_agent_columns(entries: list[dict], *, show_agreement: bool):
     cols = st.columns(3)
     for col, entry in zip(cols, entries):
         name  = entry["agent"]
         label = _AGENT_LABELS[name]
         badge = _agreement_badge(entry.get("agreed")) if show_agreement else ""
+        badge += _transition_badge(entry) if show_agreement else ""
         with col:
             st.markdown(
                 f"<span style='color:{_AGENT_COLORS[name]};font-weight:700'>"
@@ -920,12 +978,15 @@ def render_result_in_chat(result: dict):
         label = (f"Debate detail — {result['rounds_completed']} round(s), "
                  f"level {result['debate_level']}")
         with st.expander(label, expanded=False):
+            _render_position_trajectory(result["debate_history"], list(_AGENT_LABELS.keys()))
+            st.divider()
             for round_num, entries in sorted(rounds.items()):
                 if round_num == 0:
                     st.markdown("**Round 0 — Initial Positions**")
                 else:
                     agreed_count = sum(1 for e in entries if e.get("agreed") is True)
-                    st.markdown(f"**Round {round_num}** ({agreed_count}/{len(entries)} agree)")
+                    trans_str = _transition_summary(entries)
+                    st.markdown(f"**Round {round_num}** ({agreed_count}/{len(entries)} agree{trans_str})")
                 _render_agent_columns(entries, show_agreement=(round_num > 0))
                 if round_num < max(rounds):
                     st.divider()
@@ -936,6 +997,8 @@ def render_result_in_chat(result: dict):
             c_rounds.setdefault(entry["round"], []).append(entry)
 
         with st.expander("Choreographed debate — 5 rounds", expanded=False):
+            _render_position_trajectory(result["debate_history"], list(_AGENT_LABELS.keys()))
+            st.divider()
             for round_num, entries in sorted(c_rounds.items()):
                 round_label = CHOREOGRAPHED_ROUND_LABELS.get(round_num, f"Round {round_num}")
                 covariance  = CHOREOGRAPHED_COVARIANCE.get(round_num, "")
@@ -947,7 +1010,8 @@ def render_result_in_chat(result: dict):
                 else:
                     show_agree = round_num > 1
                     agreed_count = sum(1 for e in entries if e.get("agreed") is True)
-                    agree_str = f" · {agreed_count}/{len(entries)} agree" if show_agree else ""
+                    trans_str = _transition_summary(entries) if show_agree else ""
+                    agree_str = f" · {agreed_count}/{len(entries)} agree{trans_str}" if show_agree else ""
                     st.markdown(f"**Round {round_num} — {round_label}**{cov_badge}{agree_str}")
                     _render_agent_columns(entries, show_agreement=show_agree)
 

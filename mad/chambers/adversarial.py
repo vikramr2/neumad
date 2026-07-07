@@ -13,7 +13,9 @@ def run_adversarial(
     debate_level: int,
     status_cb=None,
 ) -> dict:
-    from orchestration import format_debate_history, DEBATE_LEVEL_PROMPTS, format_context
+    from orchestration import (
+        format_debate_history, DEBATE_LEVEL_PROMPTS, format_context, annotate_transitions,
+    )
 
     def _status(msg: str):
         log.info(msg)
@@ -45,6 +47,10 @@ def run_adversarial(
         })
         _status(f"  [{agent.name}] round 0 complete ({len(triples)} triples used)")
 
+    position_history: dict[str, str] = {
+        name: qbaf["main_claim"] for name, qbaf in agent_local_qbafs.items()
+    }
+
     rounds_completed = 0
     for round_num in range(1, max_rounds + 1):
         _status(f"  Debate round {round_num}/{max_rounds}")
@@ -61,6 +67,9 @@ def run_adversarial(
                 "references": agent_refs[agent.name],
                 "agreed":     agreed,
             })
+
+        _status(f"  Round {round_num} — tracking position transitions…")
+        annotate_transitions(history, round_num, query, agents, mediator, position_history)
 
         rounds_completed = round_num
         history_str = format_debate_history(history)

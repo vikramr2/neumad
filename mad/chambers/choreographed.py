@@ -47,7 +47,7 @@ def format_choreographed_history(history: list[dict]) -> str:
 
 
 def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
-    from orchestration import format_context
+    from orchestration import format_context, annotate_transitions
 
     def _status(msg: str):
         log.info(msg)
@@ -78,6 +78,10 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
         })
         _status(f"  [{agent.name}] round 1 complete ({len(triples)} triples used)")
 
+    position_history: dict[str, str] = {
+        name: qbaf["main_claim"] for name, qbaf in agent_local_qbafs.items()
+    }
+
     # ── Round 2: Adversarial attack (covariance: low) ─────────────────────
     _status("  Round 2 — adversarial challenge…")
     for agent in agents:
@@ -96,6 +100,9 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
             "agreed":     agreed,
         })
 
+    _status("  Round 2 — tracking position transitions…")
+    annotate_transitions(history, 2, query, agents, mediator, position_history)
+
     # ── Round 3: Convergence (covariance: high) ────────────────────────────
     _status("  Round 3 — finding convergence…")
     for agent in agents:
@@ -113,6 +120,9 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
             "references": agent_refs[agent.name],
             "agreed":     agreed,
         })
+
+    _status("  Round 3 — tracking position transitions…")
+    annotate_transitions(history, 3, query, agents, mediator, position_history)
 
     # ── Round 4: Mediator synthesis using round-1 KG-grounded QBAFs ──────
     _status("  Round 4 — mediator synthesizing…")
@@ -154,6 +164,9 @@ def run_choreographed(query: str, agents, mediator, status_cb=None) -> dict:
             "references": agent_refs[agent.name],
             "agreed":     agreed,
         })
+
+    _status("  Round 5 — tracking position transitions…")
+    annotate_transitions(history, 5, query, agents, mediator, position_history)
 
     return {
         "query":                query,

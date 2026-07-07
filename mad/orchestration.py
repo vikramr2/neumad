@@ -107,6 +107,54 @@ def format_debate_history(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def annotate_transitions(
+    history: list[dict],
+    round_num: int,
+    query: str,
+    agents: list,
+    mediator,
+    position_history: dict[str, str],
+) -> None:
+    """Classify each agent's round_num statement against its own and peers' prior
+    main claims, writing 'transition_type' and 'adopted_peer' onto the round's
+    history entries in place. Updates position_history with this round's claims.
+
+    position_history must already hold every agent's claim from the round being
+    compared against (seeded from round 0/1's build_local_arguments main_claim).
+    """
+    agent_by_name = {a.name: a for a in agents}
+    round_entries = {
+        e["agent"]: e for e in history
+        if e["round"] == round_num and e["agent"] in agent_by_name
+    }
+
+    new_claims = {
+        name: agent_by_name[name].extract_main_claim(query, entry["statement"])
+        for name, entry in round_entries.items()
+    }
+
+    for name, entry in round_entries.items():
+        own_prior = position_history.get(name)
+        peer_claims = {
+            p: claim for p, claim in position_history.items()
+            if p != name and p in agent_by_name
+        }
+        if own_prior is None:
+            entry["transition_type"] = None
+            entry["adopted_peer"]    = None
+            continue
+
+        match = mediator.classify_transition(query, name, new_claims[name], own_prior, peer_claims)
+        if match == "own":
+            entry["transition_type"], entry["adopted_peer"] = "unchanged", None
+        elif match == "novel":
+            entry["transition_type"], entry["adopted_peer"] = "independent_revision", None
+        else:
+            entry["transition_type"], entry["adopted_peer"] = "peer_aligned", match
+
+    position_history.update(new_claims)
+
+
 def get_references_from_triples(triples: list[dict], metadata: dict[int, dict]) -> str:
     """APA citations for the top-5 most-cited source papers in a triple set."""
     from collections import Counter
