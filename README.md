@@ -213,6 +213,11 @@ DSPy signature: `PeerArgumentElicitor`
 
 Every node in the QBAF carries two scores that are displayed separately in the UI.
 
+Quick definitions:
+
+- *Intrinsic*: The agent's standalone confidence in its argument.
+- *Dialectical*: The argument's strength against scrutiny.
+
 ### ε — Intrinsic Strength (base score τ)
 
 The LLM's raw confidence in an argument before considering how the rest of the graph reacts to it.
@@ -296,5 +301,6 @@ Peer reactions (τ = 0.5) have weaker absolute influence than high-ε domain arg
 ## References
 
 - Liang et al. (2023). *Encouraging Divergent Thinking in Large Language Models through Multi-Agent Debate* arXiv:2305.14325 — MAD protocol, tit-for-tat levels
-- Çelik et al. (2025). *Argumentative Large Language Models for Explainable and Contestable Claim Verification* AAAI 2025 — Γ/ε/Σ pipeline, MArgE
-- Kampik, Çyras, Ruiz Alarcón (2024). *Gradual Semantics for Weighted Bipolar Argumentation Frameworks.* IJAR — DFQuAD, aggregation-influence framework
+- Freedmnan et al. (2025). *Argumentative Large Language Models for Explainable and Contestable Claim Verification* AAAI 2025 — Γ/ε/Σ pipeline, MArgE
+- Jin et. al. (2026). *ARGORA: Orchestrated Argumentation for Causally Grounded LLM Reasoning and Decision Making* 	arXiv:2601.21533 - ARGORA, dialectical strength
+- Rago et. al. (2015). *Discontinuity-Free Decision Support with Quantitative Argumentation Debates* AAAI 2015 — DFQuAD
