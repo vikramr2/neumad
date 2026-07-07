@@ -9,12 +9,47 @@ import streamlit as st
 from history_store import _save_history
 from orchestration import DEBATE_LEVEL_PROMPTS
 
-_MODE_LABELS = {
-    "synthesis":     "🤝 Synthesis",
+_TOP_MODE_LABELS = {
+    "debate":    "⚔️ Debate",
+    "synthesis": "🤝 Synthesis",
+    "neukrag":   "🔬 NeuKRAG",
+}
+
+_TOP_MODE_HELP = (
+    "Debate: agents challenge and rebut each other across multiple rounds.\n"
+    "Synthesis: agents generate independently, mediator integrates.\n"
+    "NeuKRAG: single-agent hypothesis grounded directly in a knowledge graph."
+)
+
+# Sub-modes offered under each top-level mode, in display order.
+_SUB_MODES = {
+    "debate":    ["adversarial", "choreographed"],
+    "synthesis": ["synthesis"],
+    "neukrag":   ["neukrag", "neukrag-inter"],
+}
+
+_SUB_MODE_LABELS = {
     "adversarial":   "⚔️ Adversarial",
     "choreographed": "🎼 Choreographed",
+    "synthesis":     "🤝 Synthesis",
     "neukrag":       "🔬 NeuKRAG",
     "neukrag-inter": "🌐 NeuKRAG-inter",
+}
+
+_SUB_MODE_SELECT_LABEL = {
+    "debate":  "Debate style",
+    "neukrag": "KG scope",
+}
+
+_SUB_MODE_HELP = {
+    "debate": (
+        "Adversarial: MAD-style debate with rebuttals and an adaptive early stop.\n"
+        "Choreographed: fixed 5-round arc — establish → attack → converge → synthesize → review."
+    ),
+    "neukrag": (
+        "NeuKRAG: single-agent hypothesis from the neuromorphic KG only.\n"
+        "NeuKRAG-inter: single-agent hypothesis from the unified cross-domain KG."
+    ),
 }
 
 
@@ -48,18 +83,23 @@ def render_sidebar() -> dict:
         # --- Settings ---
         st.subheader("Settings")
 
-        mode = st.radio(
+        top_mode = st.radio(
             "Mode",
-            options=["synthesis", "adversarial", "choreographed", "neukrag", "neukrag-inter"],
-            format_func=_MODE_LABELS.get,
-            help=(
-                "Synthesis: agents generate independently, mediator integrates.\n"
-                "Adversarial: MAD-style debate with rebuttals and adaptive break.\n"
-                "Choreographed: fixed 5-round arc — establish → attack → converge → synthesize → review.\n"
-                "NeuKRAG: single-agent hypothesis from the neuromorphic KG only.\n"
-                "NeuKRAG-inter: single-agent hypothesis from the unified cross-domain KG."
-            ),
+            options=["debate", "synthesis", "neukrag"],
+            format_func=_TOP_MODE_LABELS.get,
+            help=_TOP_MODE_HELP,
         )
+
+        sub_options = _SUB_MODES[top_mode]
+        if len(sub_options) > 1:
+            mode = st.selectbox(
+                _SUB_MODE_SELECT_LABEL.get(top_mode, "Style"),
+                options=sub_options,
+                format_func=_SUB_MODE_LABELS.get,
+                help=_SUB_MODE_HELP.get(top_mode),
+            )
+        else:
+            mode = sub_options[0]
 
         if mode == "adversarial":
             debate_rounds = st.slider("Max Rounds", 1, 5, 3)
