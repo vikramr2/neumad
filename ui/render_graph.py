@@ -10,6 +10,7 @@ import markdown as _md_lib
 import plotly.graph_objects as _go
 import streamlit as st
 
+from load_html import load, load_template
 from orchestration import _AGENT_LABELS
 
 _NODE_TYPE_LABELS = {
@@ -244,167 +245,12 @@ _MATH_RE = _re.compile(
     _re.DOTALL,
 )
 
-_MATHJAX_SCRIPT = """<script>
-MathJax = {
-  tex: {
-    inlineMath: [['$', '$']],
-    displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
-    processEscapes: true,
-    processEnvironments: true,
-    packages: {'[+]': ['ams']}
-  },
-  options: { skipHtmlTags: ['script','noscript','style','textarea'] }
-};
-</script>
-<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>"""
+_MATHJAX_SCRIPT = load("mathjax.html").rstrip()
+_SYNTHESIS_CSS  = f"<style>\n{load('synthesis.css').rstrip()}\n</style>"
+_POPUP_HOVER_JS = f"<script>\n{load('popup_hover.js').rstrip()}\n</script>"
 
-_SYNTHESIS_CSS = """<style>
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    color: #1e293b;
-    background: transparent;
-    margin: 0;
-    padding: 6px 2px;
-    font-size: 15px;
-    line-height: 1.65;
-  }
-  h1 { font-size: 1.2em; font-weight: 700; color: #0f172a; margin: 0 0 0.8em; }
-  h2 { font-size: 1.05em; font-weight: 700; color: #1d4ed8; margin: 1.3em 0 0.35em; }
-  h3 { font-size: 0.95em; font-weight: 600; color: #1e40af; margin: 1em 0 0.25em; }
-  p  { margin: 0.35em 0; }
-  ul, ol { padding-left: 1.4em; }
-  li { margin: 0.2em 0; }
-  code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; color: #0f172a; }
-  pre  { background: #f1f5f9; padding: 10px 14px; border-radius: 8px; overflow-x: auto; }
-  strong { color: #0f172a; }
-  em { color: #475569; }
-
-  /* ── Labelled span ── */
-  .lbl {
-    position: relative;
-    display: inline;
-    border-bottom: 1.5px dotted #2563eb;
-    cursor: help;
-    border-radius: 2px;
-    padding-bottom: 1px;
-  }
-  .lbl:hover { background: #eff6ff; }
-
-  /* ── Popup ── */
-  .popup {
-    display: none;
-    position: absolute;
-    left: 0;
-    top: 1.6em;
-    width: 680px;
-    max-height: 460px;
-    background: #ffffff;
-    border: 1px solid #bfdbfe;
-    border-radius: 14px;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.13);
-    z-index: 9999;
-    padding: 22px 26px 18px;
-    overflow-y: auto;
-    box-sizing: border-box;
-    text-align: left;
-    font-size: 14px;
-  }
-  .popup-label {
-    font-size: 0.68em;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    color: #2563eb;
-    margin-bottom: 8px;
-  }
-  .node-card {
-    background: #f8fafc;
-    border-radius: 10px;
-    padding: 10px 14px;
-    margin-bottom: 8px;
-    border-left: 3px solid;
-  }
-  .node-card-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-  }
-  .expert-badge {
-    font-size: 0.68em;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 2px 7px;
-    border-radius: 4px;
-    color: white;
-  }
-  .node-type-badge {
-    font-size: 0.68em;
-    color: #64748b;
-    font-style: italic;
-  }
-  .node-statement {
-    font-size: 0.87em;
-    color: #1e293b;
-    line-height: 1.5;
-    margin: 0;
-  }
-  .no-prov { color: #94a3b8; font-size: 0.87em; font-style: italic; }
-
-  /* ── Strength bar ── */
-  .strength-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
-  }
-  .strength-label {
-    font-size: 0.68em;
-    color: #64748b;
-    white-space: nowrap;
-    min-width: 90px;
-  }
-  .strength-bar-bg {
-    flex: 1;
-    height: 5px;
-    background: #e2e8f0;
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  .strength-bar-fill {
-    height: 100%;
-    border-radius: 3px;
-    transition: width 0.3s;
-  }
-  .strength-val {
-    font-size: 0.72em;
-    font-weight: 600;
-    min-width: 30px;
-    text-align: right;
-  }
-</style>"""
-
-_POPUP_HOVER_JS = """<script>
-(function() {
-  var timers = {};
-  document.querySelectorAll('.lbl').forEach(function(el) {
-    var popup = el.querySelector('.popup');
-    if (!popup) return;
-    var id = el.dataset.nid;
-    el.addEventListener('mouseenter', function() {
-      timers[id] = setTimeout(function() { popup.style.display = 'block'; }, 200);
-    });
-    el.addEventListener('mouseleave', function() {
-      clearTimeout(timers[id]);
-      popup.style.display = 'none';
-    });
-    popup.addEventListener('mouseenter', function() { clearTimeout(timers[id]); });
-    popup.addEventListener('mouseleave', function() { popup.style.display = 'none'; });
-  });
-})();
-</script>"""
-
+_STRENGTH_BAR_TEMPLATE = load_template("strength_bar.html")
+_NODE_CARD_TEMPLATE    = load_template("node_card.html")
 
 
 def _strength_bar_html(label: str, strength: float | None) -> str:
@@ -412,14 +258,8 @@ def _strength_bar_html(label: str, strength: float | None) -> str:
         return ""
     pct   = int(strength * 100)
     color = "#10b981" if strength >= 0.6 else ("#f59e0b" if strength >= 0.4 else "#ef4444")
-    return (
-        f'<div class="strength-row">'
-        f'<span class="strength-label">{label}</span>'
-        f'<div class="strength-bar-bg">'
-        f'<div class="strength-bar-fill" style="width:{pct}%;background:{color}"></div>'
-        f'</div>'
-        f'<span class="strength-val" style="color:{color}">{strength:.2f}</span>'
-        f'</div>'
+    return _STRENGTH_BAR_TEMPLATE.substitute(
+        label=label, pct=pct, color=color, strength=f"{strength:.2f}",
     )
 
 
@@ -431,18 +271,15 @@ def _node_popup_card(node: dict) -> str:
     label    = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
     base     = node.get("base")
     sigma    = node.get("qsem_strength")
-    return (
-        f'<div class="node-card" style="border-left-color:{color}">'
-        f'<div class="node-card-header">'
-        f'<span class="expert-badge" style="background:{color}">{_html.escape(expert)}</span>'
-        f'<span class="node-type-badge">{_html.escape(label)}</span>'
-        f'</div>'
-        f'{_strength_bar_html("ε intrinsic", base)}'
-        f'{_strength_bar_html("σ dialectical", sigma)}'
+    return _NODE_CARD_TEMPLATE.substitute(
+        color=color,
+        expert=_html.escape(expert),
+        type_label=_html.escape(label),
         # div, not p — a rotation node's statement can itself contain block-level
         # markdown (e.g. a header line), which <p> can't validly contain.
-        f'<div class="node-statement">{stmt}</div>'
-        f'</div>'
+        base_bar=_strength_bar_html("ε intrinsic", base),
+        sigma_bar=_strength_bar_html("σ dialectical", sigma),
+        statement=stmt,
     )
 
 
