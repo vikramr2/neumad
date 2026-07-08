@@ -406,6 +406,7 @@ _POPUP_HOVER_JS = """<script>
 </script>"""
 
 
+
 def _strength_bar_html(label: str, strength: float | None) -> str:
     if strength is None:
         return ""
@@ -425,7 +426,7 @@ def _strength_bar_html(label: str, strength: float | None) -> str:
 def _node_popup_card(node: dict) -> str:
     expert   = node.get("expert", "")
     ntype    = node.get("type", "")
-    stmt     = _html.escape(node.get("statement", ""))
+    stmt     = _markdown_inline_or_block(node.get("statement", ""))
     color    = _EXPERT_HEX.get(expert, "#6b7280")
     label    = _NODE_TYPE_LABELS.get(ntype, ntype.replace("_", " "))
     base     = node.get("base")
@@ -438,7 +439,9 @@ def _node_popup_card(node: dict) -> str:
         f'</div>'
         f'{_strength_bar_html("ε intrinsic", base)}'
         f'{_strength_bar_html("σ dialectical", sigma)}'
-        f'<p class="node-statement">{stmt}</p>'
+        # div, not p — a rotation node's statement can itself contain block-level
+        # markdown (e.g. a header line), which <p> can't validly contain.
+        f'<div class="node-statement">{stmt}</div>'
         f'</div>'
     )
 
@@ -505,6 +508,8 @@ def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None
         f"<!DOCTYPE html><html><head>{_MATHJAX_SCRIPT}{_SYNTHESIS_CSS}</head>"
         f"<body>{md_html}{_POPUP_HOVER_JS}</body></html>"
     )
-    est_lines  = synthesis_text.count("\n") + 1
-    est_height = max(600, min(4000, est_lines * 30 + 220))
-    st.components.v1.html(full_html, height=est_height, scrolling=True)
+    # st.components.v1.html only supports a fixed height (no auto-sizing at all,
+    # which is why it's deprecated) — st.iframe's height="content" natively measures
+    # the actual rendered srcdoc height on the backend, so the iframe fits its content
+    # exactly and the chat page scrolls as a single unit with no dead space or clipping.
+    st.iframe(full_html, height="content")
