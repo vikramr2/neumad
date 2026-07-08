@@ -118,12 +118,18 @@ class PositionEdit(dspy.Signature):
     research position. This is a SURGICAL EDIT task, not a rewrite: keep the existing
     wording verbatim wherever you agree with it, and only change, add, or remove the
     specific sentences that need it from your domain's perspective. Do not restate the
-    position in your own words, and do not restructure it with your own headers or
-    framing — edit the text you were given in place. Return the full position after
-    your edits, with unchanged parts reproduced verbatim, not a summary of your changes.
-    If this is the final rotation, make sure the result reads as a complete, conclusive
-    answer to the original query, but still by editing the existing text rather than
-    replacing it with a fresh write-up."""
+    position in your own words, and do not reorganize or rephrase existing content —
+    edit the text you were given in place. Return the full position after your edits,
+    with unchanged parts reproduced verbatim, not a summary of your changes.
+
+    If this is the final rotation (is_final_round = 'yes'), make sure the result reads
+    as a complete, conclusive answer to the original query, still by editing the
+    existing text rather than replacing it with a fresh write-up. In that case only,
+    you may also insert a small number of markdown '##' section headers between
+    existing, unchanged paragraphs (e.g. a short-answer summary, supporting evidence,
+    remaining caveats) purely to organize the final answer for readability — this adds
+    headers around content, it does not rewrite, move, or rephrase any existing
+    sentence. If is_final_round is 'no', do not add headers."""
 
     query:            str = dspy.InputField(desc="Original research query")
     agent_role:       str = dspy.InputField(desc="Your specialist role and expertise")

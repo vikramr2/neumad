@@ -443,6 +443,18 @@ def _node_popup_card(node: dict) -> str:
     )
 
 
+def _markdown_inline_or_block(text: str) -> str:
+    """Render label content as markdown. Synthesis-mode labels usually wrap a short
+    inline clause — markdown wraps that in a single <p>, which would break the
+    surrounding sentence's flow, so strip it when it's the sole wrapper. Rotation-mode
+    labels can wrap whole lines (headers, bold-prefixed lines) — those don't start
+    with <p>, so they pass through as real block elements instead of literal text."""
+    html = _md_lib.markdown(text, extensions=["tables", "fenced_code"]).strip()
+    if html.startswith("<p>") and html.endswith("</p>") and html.count("<p>") == 1:
+        html = html[3:-4]
+    return html
+
+
 def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None:
     """Render synthesis HTML with inline <label> tags turned into hoverable spans."""
     node_map = {n["id"]: n for n in (graph_dict or {}).get("nodes", [])}
@@ -453,7 +465,7 @@ def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None
         text    = m.group(3).strip()
         node    = node_map.get(node_id)
         if not node:
-            return _html.escape(text)
+            return _markdown_inline_or_block(text)
         card = _node_popup_card(node)
         popup = (
             f'<span class="popup">'
@@ -463,7 +475,7 @@ def _render_synthesis_with_labels(synthesis_text: str, graph_dict: dict) -> None
         )
         return (
             f'<span class="lbl" data-nid="{node_id}" data-agent="{_html.escape(agent)}">'
-            f'{_html.escape(text)}{popup}'
+            f'{_markdown_inline_or_block(text)}{popup}'
             f'</span>'
         )
 
