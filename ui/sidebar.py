@@ -109,6 +109,18 @@ def render_sidebar() -> dict:
         else:
             mode = sub_options[0]
 
+        if top_mode == "debate":
+            neuromorphic_mediator = st.checkbox(
+                "Neuromorphic-mediated",
+                value=False,
+                help="Neuromorphic stakes its position first and sits out the debate. "
+                     "Aiml and neuroscience then debate it alone in the chosen style "
+                     "above. Neuromorphic itself — not a neutral mediator — then "
+                     "synthesizes the debate into its own final answer.",
+            )
+        else:
+            neuromorphic_mediator = False
+
         if mode == "adversarial":
             debate_rounds = st.slider("Max Rounds", 1, 5, 3)
             debate_level  = st.slider(
@@ -170,10 +182,11 @@ section[data-testid="stSidebar"] div[data-testid="stHorizontalBlock"]:hover
                         st.rerun()
 
     return {
-        "mode":          mode,
-        "debate_rounds": debate_rounds,
-        "debate_level":  debate_level,
-        "n_rotations":   n_rotations,
-        "k_hops":        k_hops,
-        "max_triples":   max_triples,
+        "mode":                  mode,
+        "debate_rounds":         debate_rounds,
+        "debate_level":          debate_level,
+        "neuromorphic_mediator": neuromorphic_mediator,
+        "n_rotations":           n_rotations,
+        "k_hops":                k_hops,
+        "max_triples":           max_triples,
     }

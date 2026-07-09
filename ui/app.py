@@ -60,13 +60,14 @@ st.set_page_config(
 
 _init_state()
 
-settings      = render_sidebar()
-mode          = settings["mode"]
-debate_rounds = settings["debate_rounds"]
-debate_level  = settings["debate_level"]
-n_rotations   = settings["n_rotations"]
-k_hops        = settings["k_hops"]
-max_triples   = settings["max_triples"]
+settings              = render_sidebar()
+mode                  = settings["mode"]
+debate_rounds         = settings["debate_rounds"]
+debate_level          = settings["debate_level"]
+neuromorphic_mediator = settings["neuromorphic_mediator"]
+n_rotations           = settings["n_rotations"]
+k_hops                = settings["k_hops"]
+max_triples           = settings["max_triples"]
 
 # ---------------------------------------------------------------------------
 # Main content
@@ -149,6 +150,8 @@ if prompt := st.chat_input(placeholder):
                 "neukrag":       "Running NeuKRAG…",
                 "neukrag-inter": "Running NeuKRAG-inter…",
             }.get(mode, "Running…")
+            if neuromorphic_mediator and mode in ("adversarial", "choreographed"):
+                spinner_msg = spinner_msg.rstrip("…") + " (neuromorphic-mediated)…"
             with st.spinner(spinner_msg):
                 if mode == "synthesis":
                     result = run_synthesis(prompt, agents, mediator, status_cb=on_status)
@@ -157,10 +160,15 @@ if prompt := st.chat_input(placeholder):
                         prompt, agents, mediator,
                         max_rounds=debate_rounds,
                         debate_level=debate_level,
+                        neuromorphic_mediator=neuromorphic_mediator,
                         status_cb=on_status,
                     )
                 elif mode == "choreographed":
-                    result = run_choreographed(prompt, agents, mediator, status_cb=on_status)
+                    result = run_choreographed(
+                        prompt, agents, mediator,
+                        neuromorphic_mediator=neuromorphic_mediator,
+                        status_cb=on_status,
+                    )
                 elif mode == "rotation":
                     result = run_rotation(
                         prompt, agents, mediator,

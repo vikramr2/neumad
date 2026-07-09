@@ -289,6 +289,8 @@ def main():
     if debate_level not in DEBATE_LEVEL_PROMPTS:
         sys.exit(f"ERROR: NEUKRAG_DEBATE_LEVEL must be 0-3, got {debate_level}")
 
+    neuromorphic_mediator = env["NEUKRAG_NEUROMORPHIC_MEDIATOR"].lower() in ("1", "true", "yes")
+
     n_rotations = int(env["NEUKRAG_ROTATIONS"])
     if n_rotations < 1:
         sys.exit(f"ERROR: NEUKRAG_ROTATIONS must be >= 1, got {n_rotations}")
@@ -321,7 +323,9 @@ def main():
     dspy.configure(lm=lm)
     log.info(f"DSPy configured with {LLM_MODEL} @ {OLLAMA_BASE_URL}")
     log.info(f"Mode: {mode}" + (
-        f"  (debate_level={debate_level}, max_rounds={max_rounds})" if mode == "adversarial" else
+        f"  (debate_level={debate_level}, max_rounds={max_rounds}, "
+        f"neuromorphic_mediator={neuromorphic_mediator})" if mode == "adversarial" else
+        f"  (neuromorphic_mediator={neuromorphic_mediator})" if mode == "choreographed" else
         f"  (n_rotations={n_rotations})" if mode == "rotation" else ""
     ))
 
@@ -365,11 +369,17 @@ def main():
             if mode == "synthesis":
                 result = run_synthesis(query, agents, mediator)
             elif mode == "adversarial":
-                result = run_adversarial(query, agents, mediator, max_rounds, debate_level)
+                result = run_adversarial(
+                    query, agents, mediator, max_rounds, debate_level,
+                    neuromorphic_mediator=neuromorphic_mediator,
+                )
             elif mode == "rotation":
                 result = run_rotation(query, agents, mediator, n_rotations=n_rotations)
             else:
-                result = run_choreographed(query, agents, mediator)
+                result = run_choreographed(
+                    query, agents, mediator,
+                    neuromorphic_mediator=neuromorphic_mediator,
+                )
 
             results.append(result)
             print(f"\n{'='*70}")
@@ -379,6 +389,8 @@ def main():
                 print(f"  (level={result['debate_level']}, rounds={result['rounds_completed']})", end="")
             elif mode == "rotation":
                 print(f"  (rotations={result['n_rotations']})", end="")
+            if mode in ("adversarial", "choreographed") and result.get("neuromorphic_mediator"):
+                print("  [neuromorphic-mediated]", end="")
             print(f"\n{'='*70}")
             print(result["final_hypothesis"])
 

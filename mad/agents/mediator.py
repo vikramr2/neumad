@@ -112,6 +112,36 @@ class MediatorGraphExtractAnswer(dspy.Signature):
     )
 
 
+class AgentMediatedSynthesis(dspy.Signature):
+    """You are the {agent_role} — write in this voice, not as a neutral third party. You
+    already staked out your own position on the query. Since then, two other domain
+    specialists have debated it adversarially. Read their exchange and the structured
+    argumentation graph (DFQuAD dialectical strengths), then produce YOUR final,
+    conclusive position on the query — revised or reinforced by whatever held up under
+    the debate, from your own domain's perspective. Prioritise claims with high
+    dialectical strength (> 0.6); treat contested claims (< 0.4) with scepticism.
+
+    IMPORTANT — inline attribution: wrap every claim drawn from a graph node with:
+        <label agent="AGENT_NAME" node_id="NODE_ID">your text here</label>
+    Use the exact agent name and integer node_id from the graph JSON."""
+
+    query:          str = dspy.InputField(desc="Original research query")
+    agent_role:     str = dspy.InputField(desc="Your own specialist role and expertise — answer in this voice")
+    own_position:   str = dspy.InputField(desc="Your own initial position on the query, staked out before the debate")
+    debate_history: str = dspy.InputField(desc="The adversarial debate between your two peers")
+    argument_graph: str = dspy.InputField(
+        desc="JSON list of agent positions. Each entry has 'agent', 'main_claim' (with 'id', "
+             "'statement', 'strength'), 'supporting' and 'attacking' sub-arguments (each with "
+             "'id', 'statement', 'strength'). Strength ∈ [0,1] is DFQuAD dialectical acceptability."
+    )
+    final_answer: str = dspy.OutputField(
+        desc="Your final, conclusive position on the query, in your own specialist voice, in "
+             "markdown with inline <label> attribution tags. ## headers per section, bullet "
+             "points for key claims, inline LaTeX ($...$) for equations. Wrap sourced claims: "
+             "<label agent=\"NAME\" node_id=\"ID\">claim text</label>"
+    )
+
+
 class MediatorJudgeDiscriminative(dspy.Signature):
     """You are a moderator of a multi-agent neuromorphic computing debate. After each round,
     decide whether the debate has converged to a sufficiently complete and well-supported answer,
@@ -202,6 +232,7 @@ class Mediator(dspy.Module):
         self.graph_extract_predict   = dspy.Predict(MediatorGraphExtractAnswer)
         self.position_match_predict  = dspy.Predict(PositionMatch)
         self.synthesis_provenance_predict = dspy.Predict(SynthesisProvenance)
+        self.agent_mediated_predict  = dspy.Predict(AgentMediatedSynthesis)
 
     def build_argument_graph(self, query: str, agent_data: dict[str, dict]) -> RoundGraph:
         """Build a RoundGraph using the ArgLLMs Design B + ARGORA methodology:
@@ -412,6 +443,37 @@ class Mediator(dspy.Module):
         return {
             "text":  result.final_answer.strip(),
             "graph": None,
+        }
+
+    def mediate_as_agent(
+        self,
+        query: str,
+        agent_role: str,
+        own_position: str,
+        debate_history: str,
+        *,
+        agent_data: dict[str, dict],
+    ) -> dict:
+        """Synthesize a debate into a final answer written in a specific agent's own
+        voice (neuromorphic-mediator mode), rather than a neutral third-party mediator.
+
+        agent_data[name] = {"statement": str, "local_qbaf": dict} for every contributing
+        agent, including the one whose voice this is — so its own claim gets a graph
+        node and can be labelled/hover-attributed too, same as every other mode.
+        Returns {"text": str, "graph": dict}.
+        """
+        graph     = self.build_argument_graph(query, agent_data)
+        strengths = compute_strengths_single_pass(graph, semantics="DFQuADModel")
+        result    = self.agent_mediated_predict(
+            query=query,
+            agent_role=agent_role,
+            own_position=own_position,
+            debate_history=debate_history,
+            argument_graph=self._build_labeled_graph_json(graph, strengths),
+        )
+        return {
+            "text":  result.final_answer.strip(),
+            "graph": self._enrich_graph_dict(graph, strengths),
         }
 
     def answer_followup(self, synthesis: str, question: str) -> str:

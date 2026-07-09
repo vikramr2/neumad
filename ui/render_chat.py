@@ -62,8 +62,9 @@ def render_result_in_chat(result: dict):
         for entry in result["debate_history"]:
             rounds.setdefault(entry["round"], []).append(entry)
 
+        nm_badge = " · 🧠 neuromorphic-mediated" if result.get("neuromorphic_mediator") else ""
         label = (f"Debate detail — {result['rounds_completed']} round(s), "
-                 f"level {result['debate_level']}")
+                 f"level {result['debate_level']}{nm_badge}")
         with st.expander(label, expanded=False):
             _render_position_trajectory(result["debate_history"], list(_AGENT_LABELS.keys()))
             st.divider()
@@ -83,7 +84,8 @@ def render_result_in_chat(result: dict):
         for entry in result["debate_history"]:
             c_rounds.setdefault(entry["round"], []).append(entry)
 
-        with st.expander("Choreographed debate — 5 rounds", expanded=False):
+        nm_badge = " · 🧠 neuromorphic-mediated" if result.get("neuromorphic_mediator") else ""
+        with st.expander(f"Choreographed debate — 5 rounds{nm_badge}", expanded=False):
             _render_position_trajectory(result["debate_history"], list(_AGENT_LABELS.keys()))
             st.divider()
             for round_num, entries in sorted(c_rounds.items()):

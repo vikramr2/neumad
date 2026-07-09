@@ -235,16 +235,23 @@ class SpecialistAgent(dspy.Module):
         self.strength_attr_predict = dspy.Predict(ArgumentStrengthAttributor)
         self.edit_predict       = dspy.Predict(PositionEdit)
 
-    def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
-        """Returns (hypothesis_text, triples)."""
+    def retrieve_context(self, query: str) -> tuple[str, list[dict]]:
+        """KG retrieval only (no generation) — the lookup initial_hypothesis and
+        edit_position both need, exposed for callers that want triples/context without
+        also generating a fresh hypothesis (e.g. grounding a debate response after the
+        fact, to build a QBAF from a position the agent already stated)."""
         entities    = self.entity_extractor(query=query)
         entry_nodes = keyword_entry_points(self.graph, entities)
         if not entry_nodes:
             log.warning(f"  [{self.name}] no entry nodes found — using entity names as fallback")
             entry_nodes = set(entities)
         triples = bfs_subgraph(self.graph, entry_nodes, k_hops=self.k_hops, max_triples=self.max_triples)
-        context = format_context(triples)
-        result  = self.hyp_predict(query=query, graph_context=context)
+        return format_context(triples), triples
+
+    def initial_hypothesis(self, query: str) -> tuple[str, list[dict]]:
+        """Returns (hypothesis_text, triples)."""
+        context, triples = self.retrieve_context(query)
+        result = self.hyp_predict(query=query, graph_context=context)
         return result.hypothesis.strip(), triples
 
     def get_references(self, triples: list[dict]) -> str:
@@ -328,12 +335,7 @@ class SpecialistAgent(dspy.Module):
         same retrieval as initial_hypothesis, since the point of passing the position
         around is for each domain to inject its own evidence.
         """
-        entities    = self.entity_extractor(query=query)
-        entry_nodes = keyword_entry_points(self.graph, entities)
-        if not entry_nodes:
-            entry_nodes = set(entities)
-        triples = bfs_subgraph(self.graph, entry_nodes, k_hops=self.k_hops, max_triples=self.max_triples)
-        context = format_context(triples)
+        context, triples = self.retrieve_context(query)
         result  = self.edit_predict(
             query=query,
             agent_role=self.role,

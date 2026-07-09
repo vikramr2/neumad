@@ -107,7 +107,8 @@ def _render_rotation_sequence(history: list[dict], n_rotations: int):
 
 
 def _render_agent_columns(entries: list[dict], *, show_agreement: bool):
-    cols = st.columns(3)
+    # Not always 3 — neuromorphic-mediator's debate rounds only have 2 active agents.
+    cols = st.columns(len(entries))
     for col, entry in zip(cols, entries):
         name  = entry["agent"]
         label = _AGENT_LABELS[name]
