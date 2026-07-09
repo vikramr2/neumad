@@ -7,3 +7,6 @@
 [submodule "Not-All-Flips-Are-Conformity"]
 	path = Not-All-Flips-Are-Conformity
 	url = https://github.com/47hao030808/Not-All-Flips-Are-Conformity.git
+[submodule "gepa"]
+	path = gepa
+	url = https://github.com/gepa-ai/gepa.git
