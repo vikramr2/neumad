@@ -17,6 +17,8 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
+from render_graph import _build_argumentation_graph_figure
+
 APP_URL = os.environ.get("NEUMAD_APP_URL", "http://localhost:8501")
 
 _CSS_URL_RE = re.compile(r'url\((["\']?)([^"\')]+)\1\)')
@@ -52,13 +54,26 @@ def _inline_css_urls(css_text: str, base_href: str, fetch) -> str:
     return _CSS_URL_RE.sub(repl, css_text)
 
 
-def capture_response_html(msg_idx: int, *, app_url: str = APP_URL, timeout_ms: int = 30_000) -> str:
+def capture_response_html(
+    msg_idx: int,
+    *,
+    graph_dict: dict | None = None,
+    app_url: str = APP_URL,
+    timeout_ms: int = 30_000,
+) -> str:
     """Open `app_url` headlessly, find the chat message tagged `msg_idx`, and return a
     standalone HTML document with its rendered DOM and all CSS inlined.
 
     Chat history is persisted to disk and reloaded on every fresh session (see
     history_store._init_state), so a brand-new headless session shows the same
     transcript — and therefore the same message at the same index — as the live one.
+
+    `graph_dict` (result["argumentation_graph"]) is optional: when given, the dead
+    static Plotly SVG that got captured (a frozen snapshot with no Plotly.js runtime
+    behind it, so hover does nothing) is replaced with a freshly rebuilt figure
+    rendered via fig.to_html(), which embeds the actual Plotly.js library and a
+    Plotly.newPlot() call — so the exported file has the same live hover/pan/zoom
+    on the argumentation graph as the Streamlit app, with no server dependency.
     """
     marker_sel = f'[data-neumad-msg-idx="{msg_idx}"]'
 
@@ -72,6 +87,26 @@ def capture_response_html(msg_idx: int, *, app_url: str = APP_URL, timeout_ms: i
             page.wait_for_selector(marker_sel, state="attached", timeout=timeout_ms)
             page.wait_for_load_state("networkidle", timeout=timeout_ms)
             page.wait_for_timeout(1500)  # let MathJax typeset and Plotly finish drawing
+
+            if graph_dict:
+                fig = _build_argumentation_graph_figure(graph_dict)
+                if fig is not None:
+                    fig_html = fig.to_html(
+                        full_html=False, include_plotlyjs=True, config={"responsive": True}
+                    )
+                    # innerHTML doesn't execute <script> tags, but we don't need it to
+                    # here — we only need the *markup* to be correct once it's
+                    # serialized below; the script runs normally when the exported
+                    # file is later opened as a real page in the user's browser.
+                    page.evaluate(
+                        """([markerSel, figHtml]) => {
+                            const marker = document.querySelector(markerSel);
+                            const msg = marker.closest('[data-testid="stChatMessage"]');
+                            const wrapper = msg.querySelector('[data-testid="stPlotlyChart"]');
+                            if (wrapper) wrapper.innerHTML = figHtml;
+                        }""",
+                        [marker_sel, fig_html],
+                    )
 
             container = page.locator(marker_sel).locator(
                 'xpath=ancestor::*[@data-testid="stChatMessage"]'

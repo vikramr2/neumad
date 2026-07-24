@@ -36,13 +36,15 @@ def _hex_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _render_argumentation_graph(graph_dict: dict) -> None:
-    """Render a QBAF as an interactive Plotly graph with per-node hover cards."""
+def _build_argumentation_graph_figure(graph_dict: dict) -> _go.Figure | None:
+    """Build the QBAF Plotly figure (node layout, hover cards, edge arrows) without
+    rendering it — shared by the live st.plotly_chart path and the artifact-export
+    path (html_capture regenerates this same figure so the saved graph keeps real
+    Plotly.js hover/pan/zoom instead of a dead static SVG snapshot)."""
     nodes = graph_dict.get("nodes", [])
     edges = graph_dict.get("edges", [])
     if not nodes:
-        st.info("No argumentation graph available.")
-        return
+        return None
 
     node_map = {n["id"]: n for n in nodes}
 
@@ -210,7 +212,7 @@ def _render_argumentation_graph(graph_dict: dict) -> None:
             xanchor="left", yanchor="bottom",
         ))
 
-    fig = _go.Figure(
+    return _go.Figure(
         data=edge_line_traces + [node_trace],
         layout=_go.Layout(
             showlegend=False,
@@ -227,6 +229,14 @@ def _render_argumentation_graph(graph_dict: dict) -> None:
             height=460,
         ),
     )
+
+
+def _render_argumentation_graph(graph_dict: dict) -> None:
+    """Render a QBAF as an interactive Plotly graph with per-node hover cards."""
+    fig = _build_argumentation_graph_figure(graph_dict)
+    if fig is None:
+        st.info("No argumentation graph available.")
+        return
     st.plotly_chart(fig, use_container_width=True)
 
 

@@ -159,7 +159,9 @@ def _render_save_button(result: dict, msg_idx: int):
                     with st.spinner("Saving artifacts…"):
                         saved_path = _save_artifacts(result, name)
                         try:
-                            html = capture_response_html(msg_idx)
+                            html = capture_response_html(
+                                msg_idx, graph_dict=result.get("argumentation_graph")
+                            )
                             (saved_path / "response.html").write_text(html, encoding="utf-8")
                             icon, msg = "💾", f"Saved to {saved_path.relative_to(ROOT)}/"
                         except Exception:
