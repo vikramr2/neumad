@@ -1,0 +1,1 @@
+At what level of abstraction/detail (e.g. LIF vs AdEx dynamics, using point-neurons vs dendritic trees, etc.) should we model spiking neural networks for neuromorphic computation and hardware design?

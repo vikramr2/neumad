@@ -1,0 +1,1 @@
+Long term, will neuromorphic computing coalesce around single “general-purpose” architecture or become a collection of diverse, more application-specific, architectures?

@@ -1,0 +1,1 @@
+What are the computational trade-offs of including a temporal dimension for spike encoding of information and the learning of higher-order temporal features (e.g. spatio-temporal spiking patterns)? Contrast this with temporally "flat" activation vectors typically seen in ANNs.

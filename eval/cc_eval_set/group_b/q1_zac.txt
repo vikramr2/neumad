@@ -1,0 +1,1 @@
+Propose a biologically plausible visual information-processing rule that provides a non-convolutional mechanism for integrating spatial and temporal information. The rule should enable an asynchronous spiking neural network, trained using Hebbian learning principles, to learn visual features such as edges, shapes, and depth.

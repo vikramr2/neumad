@@ -1,0 +1,1 @@
+Looking beyond short term “first to market” scenarios; in the medium term, will neuromorphic grow more in edge-based applications, biomedical / neurotech applications, or scalable HPC applications (including next Gen large scale AI)?

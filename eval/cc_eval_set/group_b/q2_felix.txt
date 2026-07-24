@@ -1,0 +1,1 @@
+Develop a distributed algorithm, neural encoding/representation, and spiking neuromorphic implementation for accomplishing vector search across a text-based dataset (e.g. as a content-addressable memory).

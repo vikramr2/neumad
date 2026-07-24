@@ -1,0 +1,1 @@
+Propose a scalable neuromorphic architecture (e.g. multi-chip) that is able to take advantage of in/near-memory computing for spike-based processing for batch-size one AI applications: increasing the memory density and computational throughput while minimizing latency. Compare this with batch-size one inference on GPU architectures (i.e. unable to amortize memory movement).

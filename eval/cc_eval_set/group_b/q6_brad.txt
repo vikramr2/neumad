@@ -1,0 +1,1 @@
+Develop a spiking neural algorithm for a Fourier transform based on established spiking neural arithmetic algorithms.

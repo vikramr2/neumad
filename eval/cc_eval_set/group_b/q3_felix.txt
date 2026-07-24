@@ -1,0 +1,1 @@
+Design a flexible mapping from raw visual inputs to the variables of a vector symbolic architecture (e.g. that binds objects and attributes within the visual scene).

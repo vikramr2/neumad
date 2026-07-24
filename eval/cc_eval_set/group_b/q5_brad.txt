@@ -1,0 +1,1 @@
+Construct an example of a directly constructed neural network (spiking circuit constructed to solve a task) such that learning is used to fine-tune the application to a specific use case; as opposed to learn the target application entirely in a model-free manner.

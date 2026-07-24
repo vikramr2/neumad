@@ -1,0 +1,1 @@
+What is needed (mechanisms, architectures, etc.) for local learning rules (e.g. STDP) to scale to a global loss function?
