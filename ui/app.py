@@ -43,7 +43,7 @@ from orchestration import (   # noqa: E402
 )
 
 from history_store    import _init_state, _save_history            # noqa: E402
-from render_chat       import render_messages, render_result_in_chat # noqa: E402
+from render_chat       import _render_save_button, render_messages, render_result_in_chat # noqa: E402
 from sidebar           import render_sidebar                        # noqa: E402
 from system_bootstrap  import build_neukrag_system, build_system    # noqa: E402
 
@@ -192,3 +192,4 @@ if prompt := st.chat_input(placeholder):
                 "result":  result,
             })
             _save_history()
+            _render_save_button(result, len(st.session_state["messages"]) - 1)

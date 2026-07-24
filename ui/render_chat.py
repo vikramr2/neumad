@@ -6,6 +6,7 @@ from __future__ import annotations
 import streamlit as st
 
 from history_store import _save_artifacts
+from html_capture import capture_response_html
 from orchestration import CHOREOGRAPHED_COVARIANCE, CHOREOGRAPHED_ROUND_LABELS, _AGENT_LABELS
 from paths import ROOT
 from render_debate import (
@@ -138,6 +139,12 @@ def render_result_in_chat(result: dict):
 
 def _render_save_button(result: dict, msg_idx: int):
     """Save-artifacts button + inline artifact-name prompt for one assistant message."""
+    # Invisible anchor so html_capture can find this exact message's DOM node in a
+    # headless browser (see capture_response_html).
+    st.markdown(
+        f'<span data-neumad-msg-idx="{msg_idx}" style="display:none"></span>',
+        unsafe_allow_html=True,
+    )
     if st.session_state["pending_save"] == msg_idx:
         name_key = f"artifact_name_{msg_idx}"
         artifact_name = st.text_input(
@@ -149,9 +156,17 @@ def _render_save_button(result: dict, msg_idx: int):
             if st.button("Save", key=f"save_confirm_{msg_idx}", type="primary"):
                 name = (artifact_name or "").strip()
                 if name:
-                    saved_path = _save_artifacts(result, name)
+                    with st.spinner("Saving artifacts…"):
+                        saved_path = _save_artifacts(result, name)
+                        try:
+                            html = capture_response_html(msg_idx)
+                            (saved_path / "response.html").write_text(html, encoding="utf-8")
+                            icon, msg = "💾", f"Saved to {saved_path.relative_to(ROOT)}/"
+                        except Exception:
+                            icon = "⚠️"
+                            msg = f"Saved to {saved_path.relative_to(ROOT)}/ (HTML snapshot failed)"
                     st.session_state["pending_save"] = None
-                    st.toast(f"Saved to {saved_path.relative_to(ROOT)}/", icon="💾")
+                    st.toast(msg, icon=icon)
                     st.rerun()
         with col_cancel:
             if st.button("Cancel", key=f"save_cancel_{msg_idx}"):
