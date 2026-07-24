@@ -9,11 +9,47 @@ rather than trying to reconstruct it server-side.
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import os
+import re
+from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
 APP_URL = os.environ.get("NEUMAD_APP_URL", "http://localhost:8501")
+
+_CSS_URL_RE = re.compile(r'url\((["\']?)([^"\')]+)\1\)')
+
+
+def _inline_css_urls(css_text: str, base_href: str, fetch) -> str:
+    """Rewrite url(...) references in `css_text` to base64 data: URIs.
+
+    Cross-origin @font-face loads are blocked by the browser's font-specific CORS
+    policy (unlike images) — the Streamlit static server sends no
+    Access-Control-Allow-Origin header, so a reference that just points an
+    absolute URL back at the live server silently fails to load from any other
+    origin (file://, or a different http:// port). That's what was actually
+    causing the expander caret (the "keyboard_arrow_right" icon-font ligature) to
+    render as raw overlapping text instead of an arrow glyph, which in turn
+    covered and blocked clicks on the nested References summary. Inlining the
+    font bytes as data: URIs sidesteps CORS entirely and also makes the artifact
+    genuinely self-contained — it keeps rendering correctly even after the dev
+    server is shut down.
+    """
+    def repl(m: re.Match) -> str:
+        quote, url = m.group(1), m.group(2)
+        if url.startswith("data:"):
+            return m.group(0)
+        abs_url = url if url.startswith(("http://", "https://", "//")) else urljoin(base_href, url)
+        data = fetch(abs_url)
+        if data is None:
+            return m.group(0)
+        mime = mimetypes.guess_type(abs_url)[0] or "application/octet-stream"
+        b64 = base64.b64encode(data).decode("ascii")
+        return f"url({quote}data:{mime};base64,{b64}{quote})"
+
+    return _CSS_URL_RE.sub(repl, css_text)
 
 
 def capture_response_html(msg_idx: int, *, app_url: str = APP_URL, timeout_ms: int = 30_000) -> str:
@@ -55,6 +91,13 @@ def capture_response_html(msg_idx: int, *, app_url: str = APP_URL, timeout_ms: i
                     }
                 })
             """)
+            def _fetch_bytes(url: str) -> bytes | None:
+                try:
+                    resp = page.request.get(url)
+                    return resp.body() if resp.ok else None
+                except Exception:
+                    return None
+
             stylesheet_hrefs = page.eval_on_selector_all(
                 'link[rel="stylesheet"]', "els => els.map(e => e.href)"
             )
@@ -62,13 +105,29 @@ def capture_response_html(msg_idx: int, *, app_url: str = APP_URL, timeout_ms: i
                 try:
                     resp = page.request.get(href)
                     if resp.ok:
-                        css_chunks.append(resp.text())
+                        css_chunks.append(_inline_css_urls(resp.text(), href, _fetch_bytes))
                 except Exception:
                     pass
         finally:
             browser.close()
 
     css = "\n".join(css_chunks)
+    # Streamlit marks a collapsed expander's content wrapper `inert` (fully
+    # non-interactive, for accessibility) and clears it via its own React toggle
+    # handler when opened. That handler doesn't exist in a static export, so a
+    # snapshot taken while collapsed freezes `inert` in place — clicking the
+    # native <summary> still flips the real `open` attribute (plain browser
+    # behavior), the content becomes visible, but everything inside it — e.g. a
+    # nested "References" dropdown — stays unclickable. This listener restores
+    # just that one piece of behavior generically for any <details>.
+    _INERT_FIX_SCRIPT = (
+        "<script>"
+        "document.querySelectorAll('details').forEach(function(d){"
+        "d.addEventListener('toggle', function(){"
+        "if (d.open) d.querySelectorAll('[inert]').forEach(function(el){"
+        "el.removeAttribute('inert'); }); }); });"
+        "</script>"
+    )
     # <base> lets any asset URL that wasn't inlined (e.g. an icon font) still resolve
     # by falling back to the live server, if it's still running.
     return (
@@ -78,5 +137,6 @@ def capture_response_html(msg_idx: int, *, app_url: str = APP_URL, timeout_ms: i
         f"<style>{css}</style>"
         "</head><body>"
         f"{body_html}"
+        f"{_INERT_FIX_SCRIPT}"
         "</body></html>"
     )
