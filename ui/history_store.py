@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv as _csv
 import json
+import re
 from pathlib import Path
 
 import streamlit as st
 
 from paths import ARTIFACTS_DIR, HISTORY_FILE
+from render_graph import _LABEL_RE
 
 
 def _load_history() -> dict:
@@ -115,5 +117,16 @@ def _save_artifacts(result: dict, artifact_name: str) -> Path:
             {"mode": mode, "query": result.get("query", ""), "final_hypothesis": result["final_hypothesis"]},
             f, indent=2, ensure_ascii=False,
         )
+
+    # Plain-markdown copy of the final response — strip the <label agent=... node_id=...>
+    # tags used for the popup-hover argumentation-graph cross-references (labeled
+    # synthesis mode), keeping just their inner text, since a markdown file has no
+    # hover/dropdown UI to attach them to. The model doesn't always close these
+    # tags, so _LABEL_RE (which requires a matching </label>) can miss some — a
+    # second pass strips any leftover open/close <label> tags outright.
+    clean_markdown = _LABEL_RE.sub(lambda m: m.group(3), result["final_hypothesis"])
+    clean_markdown = re.sub(r"</?label\b[^>]*>", "", clean_markdown)
+    with open(base / "response.md", "w", encoding="utf-8") as f:
+        f.write(clean_markdown)
 
     return base
