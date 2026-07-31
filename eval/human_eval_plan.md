@@ -129,7 +129,7 @@ Overall score:
     is methodologically cleaner (zero spillover risk) but doubles the recruiting
     burden. Flagged as a resourcing tradeoff, not decided here.
 
-**Note**: Alternatively, we could get 12 raters addressing 4 questions each, giving us six data points per question.
+**Note**: *Alternatively, we could get 12 raters addressing 4 questions each, giving us six data points per question.*
 
 ## 7. Session logistics
 
@@ -142,7 +142,7 @@ Overall score:
   likely 1 session.
 - Track 1 must fully close for a rater before their Track 2 sessions begin (§6).
 
-**Note:** This can be executed through a html-based survey interface. I (Vikram) can keep the artifact results and assemble a survey interface.
+**Note:** *This can be executed through a html-based survey interface. I (Vikram) can keep the artifact results and assemble a survey interface.*
 
 <!-- ## 8. Open gaps
 
