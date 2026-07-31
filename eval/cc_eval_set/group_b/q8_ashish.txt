@@ -1,0 +1,1 @@
+Design a multi-layer spike-based classification algorithm (except surrogate gradient descent and its derivatives) to perform classification on Neuromorphic datasets like DVS-Gesture. Explain how weight changes will be propagated across layers.

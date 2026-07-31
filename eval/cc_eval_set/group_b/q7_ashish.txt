@@ -1,0 +1,1 @@
+Propose a spike scalable routing architecture capable of supporting over one billion synapses efficiently.
