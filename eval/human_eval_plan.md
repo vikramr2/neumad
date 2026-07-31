@@ -42,6 +42,13 @@ The evaluation has two independent tracks, scoring two different dimensions.
 - Each rater covers 8 of the 16 questions (4 from group A + 4 from group B), not
   all 16 — see the balanced allocation in §6.
 - Rank novelty and utility. Each rank is given a normalized score. First place gets one, last place gets zero, and the middle places are interpolated. The final creativity score is multiplied between novelty and utility.
+  - Justification: comparative/ranking judgments are more reliable than absolute
+    rating scales for subjective annotation — raters use absolute scales
+    inconsistently (one person's "5" is another's "7"), while forced ranking
+    removes that scale-use variance (Kiritchenko & Mohammad, 2017, "Best-Worst
+    Scaling More Reliable than Rating Scales," ACL). The linear rank→score
+    conversion itself is a Borda count (Borda, 1784) — the classical method for
+    turning an ordinal ranking into a comparable numeric score. Moreover, this conversion enables multiplicity for a subjective combinatorial creativity score.
 
 ### Track 2 — Explainability (unblinded, `response.html`)
 
