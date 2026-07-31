@@ -47,7 +47,7 @@ The evaluation has two independent tracks, scoring two different dimensions.
     inconsistently (one person's "5" is another's "7"), while forced ranking
     removes that scale-use variance (Kiritchenko & Mohammad, 2017, "Best-Worst
     Scaling More Reliable than Rating Scales," ACL). The linear rank→score
-    conversion itself is a Borda count (Borda, 1784) — the classical method for
+    conversion itself is a Borda count: a classical method for
     turning an ordinal ranking into a comparable numeric score. Moreover, this conversion enables multiplicity for a subjective combinatorial creativity score.
 
 ### Track 2 — Explainability (unblinded, `response.html`)
