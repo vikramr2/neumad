@@ -241,8 +241,16 @@ def _render_argumentation_graph(graph_dict: dict) -> None:
 
 
 _LABEL_RE = _re.compile(
-    r'<label\s+agent=["\']?([^"\'>\s]+)["\']?\s+node_id=["\']?(\d+)["\']?\s*>(.*?)</label>',
-    _re.DOTALL,
+    r'<label\s+agent=["\']?([^"\'>\s]+)["\']?\s+node_id=["\']?(\d+)["\']?\s*>'
+    # The model doesn't always emit a closing </label> (seen e.g. in table cells).
+    # A plain non-greedy `.*?` would then bridge across to the *next* </label> it
+    # can find anywhere later in the text — silently swallowing everything in
+    # between (including, in a table, several rows' worth of markdown) into one
+    # label's captured text. Refusing to cross another <label opening tag makes
+    # an unclosed tag simply fail to match (left as harmless literal text)
+    # instead of corrupting unrelated content after it.
+    r'((?:(?!</?label\b)[\s\S])*?)'
+    r'</label>',
 )
 
 # Matches LaTeX math blocks that the Python markdown library would mangle.
